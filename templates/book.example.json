@@ -1,0 +1,50 @@
+{
+  "pdf": "C:/Livres/Mon livre.pdf",
+  "title": "Titre du livre",
+  "subtitle": "",
+  "original_title": "",
+  "author": "Prénom Nom",
+  "author_sort": "Nom, Prénom",
+  "translator": "",
+  "translator_line": "",
+  "publisher": "Éditeur",
+  "published": "1960",
+  "language": "fr",
+  "description": "Roman. Résumé court en une ou deux phrases.",
+  "identifier": "",
+  "output": "",
+
+  "source": "ocr",
+  "ocr_lang": "fra",
+  "dpi": 300,
+  "psm": 4,
+  "italics": true,
+
+  "pages": {
+    "cover": 1,
+    "body_first": 15,
+    "body_last": 280,
+    "skip": [],
+    "sections_before_body": [
+      {"id": "preface", "title": "Préface", "type": "preface", "first": 9, "last": 12}
+    ],
+    "sections_after_body": [
+      {"id": "postface", "title": "Postface", "type": "afterword", "first": 281, "last": 284}
+    ]
+  },
+
+  "running_heads": ["TITRE DU LIVRE"],
+  "header_band": 0.065,
+  "footer_band": 0.90,
+  "heading_min_size_ratio": 1.2,
+  "chapter_numbers": "roman",
+  "nbsp_before_high_punct": true,
+
+  "cover_image": "",
+  "cover_crop": [0, 0, 1, 0.9],
+
+  "colophon": [
+    "© 1960 Éditeur.",
+    "Édition numérique reconstituée à partir d'un exemplaire numérisé."
+  ]
+}

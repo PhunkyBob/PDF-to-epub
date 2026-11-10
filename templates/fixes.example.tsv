@@ -1,0 +1,29 @@
+# Corrections d'OCR propres au livre : regex Python<TAB>remplacement (une par ligne).
+# Appliquées à chaque paragraphe avant la typographie. Lignes vides et commentaires (#) ignorés.
+# Apostrophes : l'OCR peut produire ' ou ’  -> écrire ['’] dans les regex.
+# Ne corriger que des erreurs de lecture vérifiées sur l'image de la page, jamais le texte de l'auteur.
+#
+# Lettrine (grande initiale) mal lue en début de chapitre :
+^Ir y avait\b	Il y avait
+^a Que dites-vous	— Qu’en dites-vous
+# Confusions de caractères isolées :
+\b1!\s	il
+\bmaisou\b	maison
+# Supprimer un tampon ou une mention parasite tombée dans le texte :
+\s*BIBLIOTHÈQUE MUNICIPALE\s*
+#
+# Confusions fréquentes de l'OCR français (vues en relecture ; décommenter si le livre en contient,
+# après avoir vérifié qu'elles ne touchent pas un vrai mot du livre, ex. un « II » de Napoléon II) :
+#\b[PD]['’]?ai\b	J’ai
+#\bP['’]?y\b	J’y
+#\bII\b	Il
+#\b1l\b	il
+#\bFlle\b	Elle
+#\bFn\b	En
+#\bjai\b	j’ai
+#N°y\b	N’y
+#m°a\b	m’a
+# Virgule lue comme un point devant une minuscule (sauf « M. le ») :
+#(?<![\s.…M])(?<=[^\W\d_])\.(?= [a-zàâçéèêîôû])	,
+# Mot en italique : {I} = marqueur d'italique éventuel, à capturer et remettre
+#\bob({I}) ?;	obi\1

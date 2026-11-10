@@ -1,0 +1,18 @@
+[project]
+name = "pdf-to-epub"
+version = "1.0.0"
+description = "Conversion d'un livre PDF (scanné ou numérique) en EPUB 3 propre et validé"
+requires-python = ">=3.10"
+dependencies = [
+    "lxml>=5.0",
+    "pypdfium2>=4.30",
+    "pdfplumber>=0.11",
+    "pillow>=10.1",
+    "numpy>=1.26",
+    "pyspellchecker>=0.8",
+    "epubcheck>=5.1",
+    "spylls>=0.1.7",
+]
+
+[tool.uv]
+package = false
