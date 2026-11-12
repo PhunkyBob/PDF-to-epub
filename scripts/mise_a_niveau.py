@@ -57,9 +57,12 @@ def prepare(w: Path):
             old[int(f.name[5:8])] = json.loads(f.read_text("utf-8"))
     if not (v / "italic-avant.json").exists():
         (v / "italic-avant.json").write_text(json.dumps(old), "utf-8")
-    for name in ("content.json", "cover.jpg", "review.txt", "qa.txt"):
+    for name in ("content.json", "cover.jpg", "review.txt", "qa.txt", "corrections.json"):
         if (w / "build" / name).exists():
             shutil.copy(w / "build" / name, v / "build" / name)
+    # sans les décisions, rapport_humain.py refuse le rapport de v2 : les mots tranchés redeviennent « non corrigé »
+    if (w / "decisions.tsv").exists() and not (v / "decisions.tsv").exists():
+        shutil.copy(w / "decisions.tsv", v / "decisions.tsv")
     if not (v / "build" / "content-avant.json").exists():
         shutil.copy(w / "build" / "content.json", v / "build" / "content-avant.json")
     for f in (w / "build" / "relecture").glob("prop-mots*.tsv"):

@@ -18,7 +18,7 @@ prises, avec les pages.
     {"sujet": "Majuscules accentuées", "decision": "« A » et « Etait » non accentués", "pourquoi": "le livre imprimé n'accentue pas les capitales (vérifié p. 139)"}
   ],
   "points": [
-    {"ou": "p. 205 (note)", "constat": "« 1255-1205 » : date probablement mal lue", "traite": "laissé tel quel", "a_verifier": "relire la date sur la page imprimée", "dans_epub": ["1255-1205"]}
+    {"ou": "p. 205 (note)", "constat": "« 1255-1205 » : date probablement mal lue", "traite": "laissé tel quel", "a_verifier": "relire la date sur la page imprimée", "dans_epub": ["régna sur la province de 1255-1205 avant"]}
   ],
   "limites": ["Les caractères non latins des exemples sont perdus.", "Les appels de note ne sont pas liés à leur note."],
   "reproduction": "(facultatif, technique) Comment refaire l'EPUB si le livre a un traitement particulier."
@@ -53,7 +53,9 @@ Règles d'écriture :
 
 `dans_epub` est **obligatoire** pour tout point dont le constat ou le traitement contient une citation « … », et pour la
 décision « Écarts volontaires au PDF » ; une liste vide indique que la citation n'est pas du texte du livre. Recopie-y ce
-que dit l'EPUB, pas ce que dit l'image. Ces champs ne s'impriment pas. Le contrôle ne comprend pas le reste du texte libre.
+que dit l'EPUB, pas ce que dit l'image : **un morceau de la phrase (5 à 10 mots), pas le mot seul**, car `dans_epub` est
+imprimé dans le rapport comme « Extrait de l'EPUB » et sert au lecteur à retrouver l'endroit. `plus_dans_epub` ne
+s'imprime pas. Le contrôle ne comprend pas le reste du texte libre.
 
 Si le contrôle refuse, corrige ce qui est faux, le rapport ou le livre, sans reformuler pour le contourner. Un nombre qui ne
 désigne pas le total du livre se reformule (« 96 des notes »). `livrer.py` refuse un EPUB différent de celui sur lequel le
@@ -66,9 +68,16 @@ uv run --project "SKILL" python "SKILL/scripts/rapport_humain.py" --work "WORK"
 ```
 
 Écrit `WORK/build/rapport-relecture.md` : livre et fichier livré, résumé, contrôles, décisions (tableau), structure
-(chapitres, pages, nombre de paragraphes), points à vérifier (cases à cocher), limites, validation humaine, et en
-annexe les remarques du contrôle orthographique automatique. Les mots inconnus ou douteux y forment un tableau : une
-ligne par mot, toutes ses pages et la décision prise pour l'EPUB, établie d'après la relecture « mots » et le texte
-livré ; les mots à vérifier viennent en tête. Copie les verdicts `prop-mots*.tsv` dans chaque nouvelle version du dossier
-de travail : sans eux, tous les mots ressortent « à vérifier ». Relire le résultat ; ne coche jamais
+(chapitres, pages, nombre de paragraphes), points à vérifier (cases à cocher), limites, validation humaine, puis trois
+annexes que **le script remplit seul** (tu n'as rien à y écrire) :
+
+- **A. Mots inconnus ou douteux** : une ligne par mot, avec ce que l'OCR a lu, ce que le relecteur a lu sur la page, ce que contient
+  l'EPUB, la décision, les pages et un extrait de la phrase (le mot en gras). Les mots à vérifier viennent en tête.
+- **B. Corrections appliquées** : chaque forme lue et ce qui l'a remplacée, le nombre de fois, les pages, un extrait.
+- **C. Propositions de relecture non appliquées** : texte lu conservé, proposition, raison, extrait.
+
+Le script **refuse** d'écrire le rapport tant que `corrections_restantes.py` liste une correction vérifiée absente du
+texte : finis d'abord la boucle de `relecture.md` § 3. Les raisons de `decisions.tsv` sont imprimées telles quelles dans
+les annexes : écris-les en langage clair. Copie les verdicts `prop-mots*.tsv` et `decisions.tsv` dans chaque nouvelle
+version du dossier de travail : sans eux, tous les mots ressortent « non vérifié ». Relire le résultat ; ne coche jamais
 la validation humaine. Puis `livrer.py` copie l'EPUB et le rapport à côté du PDF.

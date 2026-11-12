@@ -1,5 +1,6 @@
 # Corrections d'OCR propres au livre : regex Python<TAB>remplacement (une par ligne).
-# Appliquées à chaque paragraphe avant la typographie. Lignes vides et commentaires (#) ignorés.
+# Appliquées à chaque paragraphe, sur le texte brut de l'OCR puis sur le texte final (celui d'apercu.py).
+# Lignes vides et commentaires (#) ignorés.
 # Apostrophes : l'OCR peut produire ' ou ’  -> écrire ['’] dans les regex.
 # Ne corriger que des erreurs de lecture vérifiées sur l'image de la page, jamais le texte de l'auteur.
 #
@@ -25,5 +26,5 @@
 #m°a\b	m’a
 # Virgule lue comme un point devant une minuscule (sauf « M. le ») :
 #(?<![\s.…M])(?<=[^\W\d_])\.(?= [a-zàâçéèêîôû])	,
-# Mot en italique : {I} = marqueur d'italique éventuel, à capturer et remettre
-#\bob({I}) ?;	obi\1
+# Mot en italique ou suivi d'un appel de note : {I} = marqueurs internes éventuels, à capturer et remettre
+#\bob({I})\s*;	obi\1

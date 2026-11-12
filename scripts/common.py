@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import platform
@@ -11,6 +12,7 @@ import sys
 import time
 import unicodedata
 import uuid
+from html import unescape
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -235,10 +237,48 @@ def pick_epub(work: Path, cfg: dict) -> Path | None:
 
 
 # --------------------------------------------------------------------------- relecture (review.txt, prop-mots*.tsv)
+EDGE_PUNCT = " .,;:!?«»“”\"()[]"                  # ponctuation de bord d'un mot ou d'un fragment
+# bornes de mot d'une règle : l'apostrophe compte comme partie du mot, sinon un fragment comme « aujourd » ou
+# « avotte » s'applique à l'intérieur de « aujourd’hui » ou « G’avotte » et duplique le texte
+WORD_START, WORD_END = r"(?<![\w'’])", r"(?![\w'’])"
+
+
+def straight_apos(s: str) -> str:
+    """Apostrophes droites : les relecteurs réécrivent souvent ’ en ' (« l’Etat » -> « l'Etat »)."""
+    return re.sub(r"[’‘ʼ`´]", "'", s)
+
+
 def norm_word(w: str) -> str:
-    """Forme de comparaison d'un mot : les relecteurs réécrivent souvent ’ en ' (« l’Etat » -> « l'Etat »)."""
-    w = re.sub(r"[’‘ʼ`´]", "'", w.strip().lower())
-    return w.strip(" .,;:!?«»“”\"()[]")
+    """Forme de comparaison d'un mot."""
+    return straight_apos(w.strip().lower()).strip(EDGE_PUNCT)
+
+
+def lang_code(cfg: dict) -> str:
+    """Langue du livre sans la région : « fr-FR » -> « fr »."""
+    return (cfg.get("language") or DEFAULTS["language"]).split("-")[0].lower()
+
+
+def sections(data: dict) -> list[dict]:
+    """Toutes les sections de content.json, dans l'ordre du livre."""
+    return data.get("front", []) + data.get("chapters", []) + data.get("back", [])
+
+
+def all_paras(data: dict) -> list[str]:
+    """Paragraphes puis notes de chaque section, avec leurs marqueurs internes."""
+    return [p for s in sections(data) for p in s["paras"] + (s.get("notes") or [])]
+
+
+def hocr_words(f: Path) -> list[str]:
+    """Mots lus par l'OCR sur une page (fichier hOCR), dans l'ordre ; liste vide si le fichier manque."""
+    if not f.exists():
+        return []
+    spans = re.findall(r"class=['\"]ocrx_word['\"][^>]*>(.*?)</span>", f.read_text("utf-8", errors="replace"), re.S)
+    return [unescape(re.sub(r"<[^>]+>", "", w)).strip() for w in spans]
+
+
+def fix_rules(rows: list[str]) -> list[tuple[str, str]]:
+    """(regex, remplacement) des lignes de règle de fixes.tsv ; commentaires et lignes sans tabulation ignorés."""
+    return [tuple(r.split("\t", 1)) for r in rows if r.strip() and not r.startswith("#") and "\t" in r]
 
 
 def parse_remark(line: str):
@@ -270,6 +310,64 @@ def iter_prop_mots(rel: Path):
             c = [x.strip() for x in row.split("\t")]
             if len(c) >= 4:
                 yield c[0].removeprefix("p.").strip(), c[1], c[2], c[3]
+
+
+def book_text(data: dict) -> str:
+    """Tout le texte livré (content.json), un paragraphe par ligne, sans marqueurs internes, apostrophes droites."""
+    return straight_apos(plain("\n".join(all_paras(data))))
+
+
+def decision_key(s: str) -> str:
+    """Clé d'une ligne de decisions.tsv : casse, apostrophes, espaces et ponctuation de bord ne comptent pas."""
+    s = straight_apos(s).replace(" ", " ").replace(" ", " ")
+    return re.sub(r"\s+", " ", s).strip(EDGE_PUNCT).casefold()
+
+
+def read_decisions(work: Path) -> dict[str, tuple[str, str, str]]:
+    """WORK/decisions.tsv : « forme lue <TAB> forme retenue <TAB> raison », écrit par l'orchestrateur.
+
+    Sert à trancher entre deux relecteurs en désaccord et à refuser une proposition (forme retenue = forme lue).
+    La raison est obligatoire : elle est imprimée dans le rapport.
+    Renvoie {clé de la forme lue: (forme retenue, raison, forme lue telle qu'elle est écrite, casse comprise)}."""
+    f = work / "decisions.tsv"
+    out = {}
+    for n, row in enumerate(f.read_text("utf-8-sig").splitlines() if f.exists() else [], 1):
+        if not row.strip() or row.startswith("#"):
+            continue
+        c = [x.strip() for x in row.split("\t")]
+        if len(c) < 3 or not c[0] or not c[1] or not c[2]:
+            sys.exit(f"decisions.tsv ligne {n} : il faut 3 champs séparés par une tabulation "
+                     "(forme lue, forme retenue, raison) ; la raison est obligatoire.")
+        out[decision_key(c[0])] = (c[1], c[2], c[0])
+    return out
+
+
+SHARED = SKILL_DIR / "corrections-ocr.csv"
+
+
+def read_shared() -> list[tuple[str, str, str]]:
+    """Table partagée entre tous les livres : (langue, mot lu par l'OCR, mot corrigé). Voir corrections-ocr.csv."""
+    if not SHARED.exists():
+        return []
+    with SHARED.open(encoding="utf-8-sig", newline="") as f:
+        # table éditable à la main : une ligne incomplète (champ manquant : None) est ignorée, elle ne fait pas échouer
+        # l'extraction de tous les livres
+        rows = [tuple((r.get(k) or "").strip() for k in ("langue", "lu", "corrige")) for r in csv.DictReader(f)]
+    return [r for r in rows if r[1] and r[2]]
+
+
+def write_shared(rows: list[tuple[str, str, str]]):
+    """Réécrit la table d'un seul coup (fichier provisoire puis remplacement) : une extraction lancée au même moment
+    pour un autre livre ne lit jamais une table à moitié écrite. Ordre stable d'un lancement à l'autre."""
+    tmp = SHARED.with_name(SHARED.name + ".part")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["langue", "lu", "corrige"])
+            w.writerows(sorted(set(rows), key=lambda r: (r[0], r[1].lower(), r)))
+        tmp.replace(SHARED)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- Tesseract

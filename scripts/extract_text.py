@@ -25,8 +25,9 @@ from difflib import SequenceMatcher
 
 from lxml import etree
 
-from common import (IC, IO, NOTE_BASE, NOTE_END, NOTE_RX, SCENE_MARK, SKILL_DIR, SUB_MARK, Ctx, Progress, ctx_from_args,
-                    parser, plain)
+from common import (IC, IO, NOTE_BASE, NOTE_END, NOTE_RX, SCENE_MARK, SKILL_DIR, SUB_MARK, WORD_END, WORD_START, Ctx,
+                    Progress, ctx_from_args, decision_key, fix_rules, lang_code, parser, plain, read_decisions,
+                    read_shared)
 
 NB = " "
 BB = re.compile(r"bbox (\d+) (\d+) (\d+) (\d+)")
@@ -59,7 +60,7 @@ REVIEW: list[str] = []
 class Extractor:
     def __init__(self, ctx: Ctx):
         self.ctx, self.cfg = ctx, ctx.cfg
-        self.lang = self.cfg["language"].split("-")[0].lower()
+        self.lang = lang_code(self.cfg)
         self.fr = self.lang == "fr"
         self.heads = [self.norm_cmp(h) for h in self.cfg.get("running_heads", [])]
         self.note_call = NOTE_CALL_BARE if self.cfg.get("note_call_bare_number") else NOTE_CALL
@@ -88,6 +89,7 @@ class Extractor:
         self.unknown: list[tuple[int, str]] = []        # (indice dans REVIEW, mot) : suggestions à calculer
         self.fixes = []
         self.fix_hits = {}                              # index de règle -> pages où elle s'est appliquée
+        self.fix_log = []                               # [page, lu, corrigé, extrait, place dans l'extrait] par correction
         self.note_seq = 0                               # rang de la prochaine note (donne son marqueur d'appel)
         self.italic_over = {}                           # verdicts sur l'image : {page: {id du mot: italique ?}}
         over = ctx.work / "italiques.tsv"
@@ -97,15 +99,21 @@ class Extractor:
                 if len(f) >= 3 and f[0].isdigit() and f[2] in ("i", "r"):
                     self.italic_over.setdefault(int(f[0]), {})[f[1]] = f[2] == "i"
         fx = ctx.work / "fixes.tsv"
-        if fx.exists():
-            for row in fx.read_text("utf-8").splitlines():
-                if row.strip() and not row.startswith("#") and "\t" in row:
-                    a, b = row.split("\t", 1)
-                    a = a.replace("{I}", f"[{IO}{IC}]?")       # {I} : marqueur d'italique éventuel
-                    self.fixes.append((re.compile(a), b.replace("\\t", "\t")))
+        for a, b in fix_rules(fx.read_text("utf-8").splitlines()) if fx.exists() else []:
+            # {I} : marqueurs internes éventuels (italique, appel de note)
+            a = a.replace("{I}", f"[{IO}{IC}{chr(NOTE_BASE)}-{chr(NOTE_END)}]*")
+            self.fixes.append((re.compile(a), b.replace("\\t", "\t")))
+        # table partagée de la skill (corrections-ocr.csv) : confusions d'OCR valables pour tout livre de cette langue,
+        # après les règles du livre ; une ligne de decisions.tsv qui garde la forme lue désactive la confusion
+        keep = read_decisions(ctx.work)
+        self.fixes += [(re.compile(WORD_START + re.escape(lu) + WORD_END), good.replace("\\", "\\\\"))
+                       for lang, lu, good in read_shared() if lang == self.lang and decision_key(lu) not in keep]
+        # les mêmes règles, repassées sur le texte final (typographie faite) : une règle écrite d'après le texte final
+        # (celui d'apercu.py et des relecteurs) s'applique aussi ; même indice dans les deux listes : fix_hits
+        self.fixes_final = [(rx, rep.replace("'", "’")) for rx, rep in self.fixes]
         # les mots écrits par fixes.tsv sont voulus : les corrections automatiques n'y touchent plus
-        # (sinon « déroute », absent du dictionnaire, redevient « dérouté »)
-        self.protected = {w.lower() for _, b in self.fixes for w in WORD.findall(re.sub(r"\\\d", " ", b))}
+        # (sinon « déroute », absent du dictionnaire, redevient « dérouté ») ; \1 et \g<1> ne sont pas des mots
+        self.protected = {w.lower() for _, b in self.fixes for w in WORD.findall(re.sub(r"\\(?:\d|g<\w+>)", " ", b))}
 
     # ------------------------------------------------------------------ outils
     @staticmethod
@@ -901,15 +909,15 @@ class Extractor:
         if it_letters >= 0.8 * letters:
             italic_par = True                       # paragraphe entier en italique (les appels de note restent)
             text = text.replace(IO, "").replace(IC, "")
-        for i, (rx, rep) in enumerate(self.fixes):
-            text, k = rx.subn(rep, text)
-            if k:
-                self.fix_hits.setdefault(i, []).extend([page] * k)     # tracé dans build/fixes-applied.json
+        raw_hits: set[int] = set()                      # règles appliquées au texte brut de ce paragraphe
+        text = self.apply_fixes(text, page, self.fixes, hits=raw_hits)
         text = self.fix_stray_hyphens(text)
         if self.fr:                                     # « Il » lu « I ! » : « I ! paraît », « I! les contemplait »
             text = re.sub(rf"(^|[—«.!?…] |^— ?)I ?!(?=\s+[{IO}]?[a-zà-ÿ])", r"\1Il", text)
         text = self.autofix_words(text)
         text = self.typography(text)
+        # second passage sur le texte final : c'est lui que citent les relecteurs et que montre apercu.py
+        text = self.apply_fixes(text, page, self.fixes_final, done=raw_hits)
         if self.fr:
             for m in ABBREV_SUSPECT.finditer(plain(text)):
                 REVIEW.append(f"p.{page}: abréviation douteuse (Mme, Mlle en exposant ?) : « {m.group(0)} »")
@@ -921,6 +929,33 @@ class Extractor:
                 self.unknown.append((len(REVIEW), w))          # suggestion ajoutée à la fin (resolve_suggestions)
                 REVIEW.append(f"p.{page}: mot inconnu : « {w} »")
         return IO + text + IC if italic_par else text
+
+    def apply_fixes(self, text: str, page, fixes, hits: set | None = None, done=()) -> str:
+        """Applique des règles de fixes.tsv [(regex, remplacement)] et trace chaque correction
+        (page, lu, corrigé, extrait, place de la correction dans l'extrait) pour le rapport : build/corrections.json.
+
+        hits reçoit l'indice des règles qui ont trouvé leur motif. done : règles déjà appliquées au texte brut de ce
+        paragraphe ; au second passage, celle dont le remplacement contient encore son motif (« Mais » -> « — Mais »,
+        « dit » -> « dit. ») n'est pas appliquée une seconde fois (« — — Mais », « dit.. »)."""
+        for i, (rx, rep) in enumerate(fixes):
+            count = [0]
+
+            def trace(m, rx=rx, rep=rep, again=i in done):
+                new, s = m.expand(rep), m.string
+                if again and rx.search(new):
+                    return m.group(0)
+                count[0] += 1
+                if new != m.group(0):
+                    left = plain(s[max(0, m.start() - 45):m.start()])
+                    self.fix_log.append([page, plain(m.group(0)), plain(new),
+                                         left + plain(new) + plain(s[m.end():m.end() + 45]), len(left)])
+                return new
+            text = rx.sub(trace, text)
+            if count[0]:
+                self.fix_hits.setdefault(i, []).extend([page] * count[0])     # tracé dans build/fixes-applied.json
+                if hits is not None:
+                    hits.add(i)
+        return text
 
     def finalize_block(self, b):
         """Bloc « p » (paragraphe) ou « n » (note) -> texte final."""
@@ -1017,6 +1052,7 @@ class Extractor:
                         pages=sorted(set(self.fix_hits.get(i, [])), key=str)[:30])
                    for i, (rx, rep) in enumerate(self.fixes)]
         (self.ctx.build / "fixes-applied.json").write_text(json.dumps(applied, ensure_ascii=False, indent=1), "utf-8")
+        (self.ctx.build / "corrections.json").write_text(json.dumps(self.fix_log, ensure_ascii=False, indent=0), "utf-8")
         (self.ctx.build / "review.txt").write_text("\n".join(head + top + REVIEW) + "\n", "utf-8")
         print("\n".join(head))
         print(f"-> {self.ctx.build / 'content.json'} ; relecture : {self.ctx.build / 'review.txt'} "

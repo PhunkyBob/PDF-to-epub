@@ -127,23 +127,40 @@ Puis les remarques :
   ou un mot mal placé se règle par `note_anchors` (`config.md`) : `qa.txt` doit être vide sur ce point. Note non détectée (elle reste dans le texte, souvent « 1. Mot :
   définition ») : monter `footnote_max_size_ratio` (ex. 0.92) ; texte courant pris pour une note : le baisser.
 
-Corrige dans `WORK/fixes.tsv` (`regex<TAB>remplacement`, une règle par ligne, appliquée à chaque paragraphe
-avant la typographie ; les apostrophes de l'OCR peuvent y être droites ou courbes : écrire `['’]` dans la regex ;
-un mot en italique est entouré de marqueurs internes : écrire `{I}` là où un marqueur peut se trouver et le
-capturer pour le remettre). **Les règles voient le texte brut de l'OCR**, pas le texte final : il n'y a souvent
-pas d'espace avant `! ? ; :` (écrire `Ab ?!` et non `Ab !`), et les corrections automatiques passent après
-(un « l’ignore » final peut être « Pignore » dans le texte brut). Exemples :
+Les corrections vont dans `WORK/fixes.tsv` (`regex<TAB>remplacement`, une règle par ligne). Les règles tirées des
+relecteurs y sont écrites par le script (boucle plus bas) ; tu n'écris à la main que celles que la boucle te demande, **au-dessus**
+de la ligne `# >>> RÈGLES AUTOMATIQUES`. Chaque règle passe sur le texte brut de l'OCR puis sur le texte final (celui
+d'`apercu.py`). Apostrophe droite ou courbe : `['’]` ; espace avant `! ? ; :` : `\s*` ; mot en italique ou suivi d'un appel
+de note : `{I}` là où un marqueur peut se trouver, capturé et remis. Exemples :
 ```
 ^a Que dites-vous	— Qu’en dites-vous
 \bmaisou\b	maison
-\bob({I}) ?;	obi\1
+\bob({I})\s*;	obi\1
 ```
-Ne réécris jamais le texte de l'auteur : corrige seulement les erreurs de lecture. **La référence est ce qui est
-imprimé**, pas ce qui serait exact : pas de correction de faits, de noms de lieux ni de translittération (ne pas
-ajouter de ō ou de ô, ni dans le texte ni dans `original_title`, si le livre n'en imprime pas). Une anomalie de
-l'imprimé va dans les points à vérifier du rapport ; seul un relecteur humain décide d'une correction éditoriale.
-Une règle qui remplace un caractère par un autre (ponctuation, chiffres romains en petites capitales) se vérifie sur
-l'image, et le `colophon` recopie la graphie imprimée.
+### Règle de correction (sans exception)
+
+**But : corriger le plus possible d'erreurs de lecture (OCR) et de coquilles.** Une erreur vérifiée se corrige :
+tu ne choisis pas de la laisser dans le texte pour la signaler dans le rapport. Pour chaque mot ou passage :
+
+| Ce que tu constates | Ce que tu fais |
+|---|---|
+| L'image de la page porte une autre forme que le texte | **Corriger** d'après l'image |
+| Coquille évidente du livre imprimé, une seule correction possible : mot qui n'existe pas (« avce » → « avec ») ou faute d'accord flagrante (« un telle impolitesse » → « une telle impolitesse ») | **Corriger** (verdict « coquille » des sous-agents « mots », ou règle à la main) ; le rapport la liste comme écart au PDF |
+| L'image porte la même forme, et elle est correcte (nom propre, mot étranger, mot rare, graphie d'époque) | Conserver |
+| Illisible sur l'image | Laisser ; le rapport le signale |
+| Deux relecteurs proposent deux corrections différentes | Regarder l'image, puis écrire la décision dans `decisions.tsv` |
+| La proposition change le sens, le style, un fait, un nom ou une translittération que le livre imprime ainsi | Refuser, avec la raison, dans `decisions.tsv` |
+
+Ce que tu ne fais jamais : reformuler, ajouter ou retirer des mots de l'auteur, corriger un fait ou un nom de lieu,
+ajouter des ō ou des ô que le livre n'imprime pas (ni dans le texte ni dans `original_title`). Le `colophon` recopie la
+graphie imprimée.
+
+`WORK/decisions.tsv` (une ligne par décision : `forme lue<TAB>forme retenue<TAB>raison`) sert à trancher et à refuser.
+Pour garder la forme lue, écris-la deux fois. La raison est obligatoire et elle est imprimée dans le rapport :
+```
+omée	ornée	image p. 317 : « ornée d'une perle »
+droitistes	droitistes	mot voulu par l'auteur, imprimé ainsi p. 88
+```
 
 **Retours d'un relecteur humain** : vérifie chaque remarque sur l'image, sépare les erreurs de la chaîne (à corriger
 aussi dans la skill) de celles du livre, et applique ses corrections éditoriales dans une section à part de
@@ -194,9 +211,22 @@ puis lance **dans un même message** (prompts dans `references/orchestration.md`
   erreurs qui forment un vrai mot (« Pai » pour « J'ai », « II » pour « Il », un nom propre mal lu) demandent
   une lecture.
 
-**Trie toi-même** leurs propositions (`references/relecture.md` § 3 : beaucoup de faux positifs, « A » → « À »,
-graphies d'époque, reformulations), regroupe les erreurs récurrentes en règles générales dans `fixes.tsv`,
-teste-les avec `apercu.py`, puis relance une fois `--from extract` et vérifie que les motifs ont disparu.
+**Applique ensuite toutes les corrections par cette boucle** (détail des cas : `references/relecture.md` § 3). Tu ne
+recopies aucune règle à la main : le script le fait.
+
+1. Verse les propositions dans `fixes.tsv` (section automatique, réécrite à chaque lancement) :
+   `uv run --project "SKILL" python "SKILL/scripts/propositions_vers_regles.py" --work "WORK" --appliquer`
+2. Reconstruis : `run.py --work "WORK" --from extract`
+3. Liste ce qui n'est pas passé dans le texte :
+   `uv run --project "SKILL" python "SKILL/scripts/corrections_restantes.py" --work "WORK"`
+4. Chaque ligne affichée dit quoi faire (`NON VÉRIFIÉ`, `NON CORRIGÉ`, `SANS EFFET`, `CONTEXTE`, `CONFLIT`, `INCERTAIN`). Traite-les
+   **toutes**, puis reprends à l'étape 1.
+5. Tu as fini quand l'étape 3 affiche « aucune correction restante ». Tant que ce n'est pas le cas, le rapport et la
+   livraison sont refusés.
+
+**Dernier recours, seulement après trois tours complets** : si une correction ne passe toujours pas, écris une ligne de
+`decisions.tsv` qui garde la forme lue, avec la raison « correction impossible : il faut « x », à corriger à la main
+p. 212 ». C'est la seule exception à la règle de correction ; le rapport l'affiche pour le lecteur humain, qui corrigera.
 
 `WORK/build/qa.txt` (créé par `validate.py`) signale les problèmes structurels restants : folio ou en-tête
 oublié, paragraphe coupé en milieu de phrase, césure non recollée, paragraphe anormalement long. Corrige via la
@@ -220,8 +250,11 @@ uv run --project "SKILL" python "SKILL/scripts/rapport_humain.py" --work "WORK"
 ```
 
 Il produit `WORK/build/rapport-relecture.md` : livre, résumé, contrôles, décisions, structure (chapitres et
-pages), points à vérifier en cases à cocher, limites, validation humaine (que tu ne coches jamais), et en annexe
-les remarques du contrôle orthographique automatique (mots inconnus ou douteux : une ligne par mot, ses pages et la décision prise).
+pages), points à vérifier en cases à cocher, limites, validation humaine (que tu ne coches jamais), et trois annexes
+remplies par le script : A. mots inconnus ou douteux (ce que l'OCR a lu, ce que le relecteur a lu sur la page, ce que contient l'EPUB,
+la décision, les pages, un extrait de la phrase) ; B. toutes les corrections appliquées (lu → corrigé, pages, extrait) ;
+C. propositions de relecture non appliquées et pourquoi. Il refuse d'écrire le rapport tant que
+`corrections_restantes.py` liste quelque chose.
 
 **Livraison : l'EPUB et le rapport doivent se trouver dans le même dossier que le PDF d'origine.**
 
@@ -264,8 +297,15 @@ complète, dis-le clairement : ne présente pas l'EPUB comme relu.
 - **lots_mots.py** : tranches `mots-in-N.txt` des remarques `mot inconnu` / `mot douteux` encore sans verdict,
   pour les sous-agents « mots » (une occurrence par mot inconnu ; relançable après un nouveau contrôle).
 - **export_review.py** : texte en lots `build/relecture/lotN.txt` pour la relecture par sous-agents.
-- **propositions_vers_regles.py** : règles candidates (`build/relecture/regles-candidates.tsv`) tirées des `prop-*.tsv`
-  de confiance haute, avec les propositions écartées et leur raison ; n'écrit jamais dans `fixes.tsv`.
+- **propositions_vers_regles.py** : transforme les `prop-*.tsv` de confiance haute en règles ; avec `--appliquer`, les
+  écrit dans la section automatique de `fixes.tsv` (tes règles à la main, hors de cette section, ne sont jamais touchées).
+  Les règles automatiques ne changent que les mots fautifs.
+- **corrections_restantes.py** : liste les corrections vérifiées absentes du texte, avec ce qu'il faut faire pour chacune.
+- **corrections-ocr.csv** (dans `SKILL`) : table partagée entre tous les livres (`langue,lu,corrige`) des confusions d'OCR
+  qui valent partout : un mot qui n'existe pas, corrigé en un mot du dictionnaire. Appliquée à chaque extraction,
+  enrichie par `livrer.py` à chaque livraison (confusion relevée au moins deux fois dans le livre). Rien de propre à un livre n'y entre (noms propres, mots du livre) : cela
+  reste dans le `fixes.tsv` du livre. Tu peux y ajouter une ligne à la main ; une ligne de `decisions.tsv` qui garde la
+  forme lue désactive une confusion pour un livre.
 - **livrer.py** : copie l'EPUB et le rapport de relecture dans le dossier du PDF d'origine.
 - **rapport_humain.py** : écrit le rapport de relecture pour un humain (`build/rapport-relecture.md`) à partir de
   `rapport.json` (rédigé par l'agent) et des contrôles automatiques.

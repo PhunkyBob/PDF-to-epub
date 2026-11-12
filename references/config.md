@@ -119,7 +119,9 @@ Verdicts sur l'image, prioritaires sur la mesure d'inclinaison : `page<TAB>id du
 ## `fixes.tsv` (dans le dossier de travail)
 
 Une règle par ligne : `regex Python<TAB>remplacement`. Lignes vides et `#…` ignorées. Appliquées à chaque
-paragraphe (et à chaque note), avant les corrections automatiques et la typographie. Dans la regex, `{I}`
-désigne un marqueur d'italique éventuel (les mots en italique en sont entourés) : `\bob({I}) ?;` → `obi\1`.
-Les règles voient le texte brut de l'OCR (souvent sans espace avant `! ? ; :`). Les mots écrits par un
-remplacement sont protégés des corrections automatiques (dictionnaire, accents) qui passent ensuite.
+paragraphe (et à chaque note), deux fois : sur le texte brut de l'OCR, avant les corrections automatiques et la
+typographie, puis sur le texte final (celui d'`apercu.py`). Dans la regex, `{I}` désigne les marqueurs internes
+éventuels (italique, appel de note), à capturer et remettre : `\bob({I})\s*;` → `obi\1`. L'espace avant `! ? ; :`
+est absente du texte brut et insécable dans le texte final : écrire `\s*`. Les mots écrits par un remplacement sont
+protégés des corrections automatiques (dictionnaire, accents). Tes règles vont **au-dessus** de la ligne
+`# >>> RÈGLES AUTOMATIQUES` : la section en dessous est réécrite par `propositions_vers_regles.py --appliquer`.

@@ -14,11 +14,11 @@ import json
 import re
 import sys
 from collections import defaultdict
-from html import unescape
 from pathlib import Path
 
 from coherence import Epub, audit, digest
-from common import iter_prop_mots, near_pages, norm_word, parse_remark, pick_epub, plain
+from common import (all_paras, book_text, decision_key, hocr_words, iter_prop_mots, near_pages, norm_word, parse_remark,
+                    pick_epub, plain, read_decisions, sections, straight_apos)
 
 LABELS = [
     ("mot inconnu", "Mots absents du dictionnaire (souvent des noms propres ou des mots étrangers corrects)"),
@@ -45,15 +45,17 @@ def label(kind: str) -> str:
 
 
 A_VERIFIER, CORRIGE, CONSERVE = 0, 1, 2
-KEEP_OK = "Conservé tel quel : vérifié sur l'image"
-KEEP_UNSEEN = "Conservé tel quel : non vérifié sur l'image, à vérifier"
-CHANGED_UNSEEN = "Modifié par la correction automatique : forme finale à vérifier"
-UNREADABLE = "Laissé tel quel : illisible sur l'image, à vérifier"
+UNREADABLE = "Laissé tel quel : le relecteur n'a pas pu lire le mot sur la page, à vérifier"
 
 
 def bare(w: str) -> str:
     """Le mot sans sa ponctuation, casse conservée."""
-    return re.sub(r"[’‘ʼ`´]", "'", w).strip(" .,;:!?«»“”\"()")
+    return straight_apos(w).strip(" .,;:!?«»“”\"()")
+
+
+def word_rx(form: str) -> str:
+    """Regex du mot entier dans le texte livré (« s'Untel » contient « Untel », « Untel's » non)."""
+    return r"(?<!\w)" + re.escape(form) + r"(?![\w'])"
 
 
 def core(w: str) -> str:
@@ -61,107 +63,244 @@ def core(w: str) -> str:
     return re.sub(r"^(?:[dlnmstcj]|qu)'", "", norm_word(w))
 
 
-def decision(ocr: str, verdict: tuple | None, final: str | None, in_text) -> tuple[int, str]:
-    """(catégorie, décision) pour un mot signalé. La décision décrit le texte livré, pas seulement le verdict.
+def decision(ocr: str, verdict: tuple | None, final: str | None, in_text, chosen: tuple | None = None) -> dict:
+    """Décision pour un mot signalé, d'après le texte livré et pas seulement d'après le verdict.
 
     verdict : (mot imprimé, verdict) de la vérification sur image, ou None. final : le mot à cet endroit de l'EPUB,
-    ou None si l'endroit n'a pas pu être retrouvé."""
+    ou None si l'endroit n'a pas pu être retrouvé. chosen : (forme retenue, raison, …) de decisions.tsv, ou None.
+    Renvoie cat, texte, imprime (forme vue sur l'image), epub (forme livrée), attendu, bloquant (livraison refusée),
+    verifie (un relecteur ou une décision s'est prononcé sur ce mot)."""
     form = bare(ocr)
+
+    def res(cat, texte, imprime="", attendu="", bloquant=False):
+        epub = final or (attendu if attendu and in_text(attendu) and not in_text(form) else form if in_text(form) else "")
+        return dict(cat=cat, texte=texte, imprime=imprime, epub=epub, attendu=attendu, bloquant=bloquant,
+                    verifie=bool(chosen) or verdict is not None)
+
+    def applied(target):
+        if final:
+            return core(final) == core(target)
+        return in_text(target) and (not in_text(form) or core(form) == core(target))
+
+    seen = ""
+    if verdict and not verdict[1].startswith(("illisible", "coquille")):
+        seen = bare(verdict[0].split(" (")[0])
+    if chosen:
+        target, why = bare(chosen[0]), chosen[1]
+        if core(target) == core(ocr):
+            return res(CONSERVE, f"Conservé tel quel, décision motivée : {why}", seen)
+        if applied(target):
+            return res(CORRIGE, f"Corrigé en « {target} », décision motivée : {why}", seen, target)
+        return res(A_VERIFIER, f"NON CORRIGÉ : la correction décidée « {target} » n'est pas dans l'EPUB", seen, target, True)
     if verdict is None:
-        if final and core(final) != core(ocr):
-            return A_VERIFIER, f"Remplacé par « {final} » par la correction automatique : non vérifié sur l'image, à vérifier"
-        return (A_VERIFIER, KEEP_UNSEEN) if final or in_text(form) else (A_VERIFIER, CHANGED_UNSEEN)
+        return res(A_VERIFIER, "NON VÉRIFIÉ : aucun relecteur n'a lu ce mot sur la page", bloquant=True)
     printed, kind = verdict
-    target = bare(printed.split(" (")[0])
     if kind.startswith("illisible"):
-        return A_VERIFIER, UNREADABLE
-    if final and core(final) != core(target):
-        if core(final) == core(ocr):
-            return A_VERIFIER, f"Forme lue conservée, alors que l'imprimé porte « {target} » : à vérifier"
-        return A_VERIFIER, f"Remplacé par « {final} » dans l'EPUB, alors que l'imprimé porte « {target} » : à vérifier"
-    if core(ocr) == core(target) and (kind.startswith("correct") or form == bare(printed.split(" (")[0])):
-        return CONSERVE, KEEP_OK
-    if final or (in_text(target) and not in_text(form)) or core(ocr) == core(target):
-        return CORRIGE, f"Corrigé en « {target} » : vérifié sur l'image"
-    if in_text(form):
-        return A_VERIFIER, f"Forme lue conservée, alors que l'imprimé porte « {target} » : à vérifier"
-    return A_VERIFIER, f"Corrigé d'après l'image (« {target} ») : forme finale à vérifier"
+        return res(A_VERIFIER, UNREADABLE)
+    target = bare(printed.split(" (")[0])
+    if kind.startswith("coquille"):
+        if applied(target):
+            return res(CORRIGE, f"Coquille du livre imprimé, corrigée en « {target} » (écart volontaire au PDF)", form, target)
+        return res(A_VERIFIER, f"NON CORRIGÉ : coquille du livre imprimé, à corriger en « {target} »", form, target, True)
+    if core(ocr) == core(target):
+        if final and core(final) != core(target):
+            return res(A_VERIFIER, f"NON CORRIGÉ : le relecteur a lu « {target} » sur la page, l'EPUB contient « {final} »", target, target, True)
+        return res(CONSERVE, "Conservé : le relecteur a lu le même mot sur la page", target)
+    if applied(target):
+        return res(CORRIGE, f"Corrigé en « {target} », lu par le relecteur sur la page", target, target)
+    if final or in_text(form):
+        return res(A_VERIFIER, f"NON CORRIGÉ : le relecteur a lu « {target} » sur la page, l'EPUB contient « {final or form} »", target, target, True)
+    return res(A_VERIFIER, f"Corrigé d'après le relecteur (« {target} ») : forme finale à vérifier", target, target)
 
 
 def locator(work: Path, data: dict):
-    """Renvoie une fonction (page, mot) -> mot à cet endroit de l'EPUB, ou None si l'endroit n'est pas certain.
+    """Renvoie une fonction (page, mot) -> (mot à cet endroit de l'EPUB, extrait de l'EPUB, extrait lu par l'OCR).
 
-    L'endroit doit être unique : deux mots avant et deux mots après identiques à ceux de l'OCR."""
-    raw = [t for s in data["front"] + data["chapters"] + data.get("back", [])
-           for p in s["paras"] + (s.get("notes") or []) for t in plain(p).split() if re.search(r"\w", t)]
+    Le mot et l'extrait de l'EPUB valent None si l'endroit n'est pas certain : il doit être unique, deux mots avant
+    et deux mots après identiques à ceux de l'OCR. Dans les extraits, le mot est en gras."""
+    raw = [t for p in all_paras(data) for t in plain(p).split() if re.search(r"\w", t)]
     norm = [norm_word(t) for t in raw]
     where = defaultdict(list)
     for i, t in enumerate(norm):
         where[t].append(i)
-    cache: dict[str, list[str]] = {}
+    cache: dict[str, tuple[list[str], list[str]]] = {}
 
-    def page_words(page: str) -> list[str]:
+    def page_words(page: str):
         if page not in cache:
-            f = work / "ocr" / f"page-{int(page):03d}.hocr" if page.isdigit() else None
-            html = read(f) if f else ""
-            words = [re.sub(r"<[^>]+>", "", m) for m in re.findall(r"class=['\"]ocrx_word['\"][^>]*>(.*?)</span>", html, re.S)]
-            cache[page] = [norm_word(unescape(w)) for w in words if re.search(r"\w", w)]
+            words = hocr_words(work / "ocr" / f"page-{int(page):03d}.hocr") if page.isdigit() else []
+            words = [w for w in words if re.search(r"\w", w)]
+            cache[page] = (words, [norm_word(w) for w in words])
         return cache[page]
 
-    def final(page: str, word: str) -> str | None:
-        ws, w = page_words(page), norm_word(word)
-        found = set()
-        for i in range(2, len(ws) - 2):
-            if ws[i] == w:
+    def cut(words, i, n=6):
+        return " ".join(words[max(0, i - n):i] + [f"**{words[i]}**"] + words[i + 1:i + 1 + n])
+
+    def find(page: str, word: str):
+        w = norm_word(word)
+        found, lu = {}, None
+        for pg in near_pages(page):
+            seen, ws = page_words(pg)
+            for i in range(len(ws)):
+                if ws[i] != w:
+                    continue
+                lu = lu or cut(seen, i)
+                if not 2 <= i < len(ws) - 2:
+                    continue
                 for pos in where.get(ws[i - 1], []):
                     if 0 < pos and pos + 3 < len(norm) and norm[pos - 1] == ws[i - 2] \
                             and norm[pos + 2] == ws[i + 1] and norm[pos + 3] == ws[i + 2]:
-                        found.add(bare(raw[pos + 1]))
-        return found.pop() if len(found) == 1 else None
+                        found[bare(raw[pos + 1])] = cut(raw, pos + 1)
+            if lu:
+                break
+        if len(found) == 1:
+            (final, extrait), = found.items()
+            return final, extrait, lu
+        return None, None, lu
 
-    return final
+    return find
 
 
-def word_table(work: Path, data: dict, remarks: list) -> list[str]:
-    """Annexe des mots signalés : une ligne par mot, avec toutes ses pages et la décision prise pour l'EPUB.
+def snippet(text: str, form: str, width: int = 45) -> str | None:
+    """Extrait du texte livré autour de la première occurrence de `form` (mot entier), le mot en gras."""
+    m = re.search(word_rx(form), text) if form else None
+    if not m:
+        return None
+    a = text.rfind("\n", 0, m.start()) + 1
+    b = text.find("\n", m.end())
+    b = len(text) if b < 0 else b
+    left, right = text[max(a, m.start() - width):m.start()], text[m.end():min(b, m.end() + width)]
+    left = left.split(" ", 1)[-1] if m.start() - width > a and " " in left else left
+    right = right.rsplit(" ", 1)[0] if m.end() + width < b and " " in right else right
+    return f"{left}**{m.group(0)}**{right}".strip()
+
+
+def load_remarks(work: Path):
+    """review.txt -> (autres remarques groupées par genre, [(page, genre, mot)] des mots inconnus ou douteux)."""
+    groups, remarks = defaultdict(list), []
+    for l in read(work / "build" / "review.txt").splitlines():
+        r = parse_remark(l)
+        if not r:
+            continue
+        page, rest, kind, word = r
+        if word:
+            remarks.append((page, kind, word))
+        else:
+            groups[label(kind)].append(f"p. {page} — {rest}")
+    return groups, remarks
+
+
+def word_rows(work: Path, data: dict, remarks: list, text: str | None = None) -> list[dict]:
+    """Une ligne par mot signalé et par décision : lu, imprimé, EPUB, décision, pages, extraits.
 
     Un verdict sur un mot inconnu vaut pour tout le livre (c'est le dictionnaire qui l'ignore) ; pour un mot douteux,
-    il vaut à sa page (c'est la lecture de cette page qui était incertaine), sauf si le mot a disparu du texte."""
-    text = re.sub(r"[’‘ʼ`´]", "'", plain(json.dumps(data, ensure_ascii=False)))
+    il vaut à sa page (c'est la lecture de cette page qui était incertaine), sauf si le mot a disparu du texte.
+    text : book_text(data), s'il est déjà calculé."""
+    if text is None:
+        text = book_text(data)
+    found: dict[str, bool] = {}                      # une recherche sur tout le livre par forme, pas par remarque
 
     def in_text(form: str) -> bool:
-        return bool(form) and re.search(r"(?<!\w)" + re.escape(form) + r"(?![\w'])", text) is not None   # « s'Untel » contient « Untel »
+        if form not in found:
+            found[form] = bool(form) and re.search(word_rx(form), text) is not None
+        return found[form]
 
-    final = locator(work, data)
+    find = locator(work, data)
+    decisions = read_decisions(work)
     by_page, by_word = {}, {}
     for page, ocr, printed, kind in iter_prop_mots(work / "build" / "relecture"):
         w = norm_word(ocr)
         by_page[(page, w)] = (printed, kind.lower())
         by_word.setdefault(w, (printed, kind.lower()))
-    entries: dict[str, dict] = {}
+    rows: dict[tuple, dict] = {}
     for page, kind, word in remarks:
         w = norm_word(word)
-        e = entries.setdefault(w, dict(word=bare(word), pages=set(), kinds=set(), by=defaultdict(set)))
-        e["pages"].add(page)
-        e["kinds"].add("césure" if kind.startswith("césure") else kind.removeprefix("mot "))
         v = next((by_page[(p, w)] for p in near_pages(page) if (p, w) in by_page), None)
         if v is None and w in by_word and (kind.endswith("mot inconnu") or not in_text(bare(word))):
             v = by_word[w]
-        e["by"][decision(word, v, final(page, word), in_text)].add(page)
+        final, extrait, lu = find(page, word)
+        d = decision(word, v, final, in_text, decisions.get(decision_key(word)))
+        r = rows.setdefault((w, d["texte"]), dict(d, mot=bare(word), pages=set(), extraits=[]))
+        r["pages"].add(page)
+        if len(r["extraits"]) < 2:
+            ex = extrait or snippet(text, d["epub"]) or (f"(texte lu) {lu}" if lu else None)
+            if ex and all(ex != x[1] for x in r["extraits"]):
+                r["extraits"].append((page, ex))
+    return sorted(rows.values(), key=lambda r: (not r["bloquant"], r["cat"], r["mot"].lower()))
 
-    def pages(s):
-        return ", ".join(sorted(s, key=lambda p: (not p.isdigit(), int(p) if p.isdigit() else 0, p)))
 
+def sorted_pages(s) -> list[str]:
+    return sorted(s, key=lambda p: (not p.isdigit(), int(p) if p.isdigit() else 0, p))
+
+
+def pages_text(s) -> str:
+    return ", ".join(sorted_pages(s))
+
+
+def word_table(rows: list[dict], n_remarks: int) -> list[str]:
+    todo = sum(1 for r in rows if r["cat"] == A_VERIFIER)
+    cells = [(r["mot"], r["imprime"] or "—", r["epub"] or "?", r["texte"], pages_text(r["pages"]),
+              "<br>".join(f"p. {p} : … {x} …" for p, x in r["extraits"]) or "—") for r in rows]
+    return [f"### Mots inconnus ou douteux ({len(rows)} lignes, {n_remarks} signalements)", "",
+            "Une ligne par mot : ce que l'OCR a lu, ce que le relecteur a lu sur la page du PDF, ce que contient l'EPUB, la décision "
+            f"prise, les pages du PDF et un extrait pour retrouver le mot (en gras). {todo} mot(s) restent à vérifier : "
+            "ils sont en tête de tableau.", ""] + table(
+        cells, ["Lu par l'OCR", "Lu par le relecteur", "Dans l'EPUB", "Décision", "Pages", "Extrait"]) + [""]
+
+
+def applied_table(work: Path) -> list[str]:
+    """Annexe : toutes les corrections de lecture appliquées (build/corrections.json, écrit par l'extraction)."""
+    out = ["## Annexe B. Corrections appliquées au texte lu", ""]
+    f = work / "build" / "corrections.json"
+    if not f.exists():
+        return out + ["Liste indisponible : le texte a été extrait avant que les corrections ne soient tracées.", ""]
+    log = json.loads(f.read_text("utf-8"))
+    groups: dict[tuple, dict] = {}
+    for page, lu, new, extrait, *pos in log:
+        key = (lu.strip(), new.strip())
+        if key not in groups:
+            # pos : place de la correction dans l'extrait (un corrections.json plus ancien ne la donne pas). Sans elle,
+            # mettre en gras la première occurrence marquerait « f**il**le » pour une correction en « il ».
+            a = pos[0] if pos else extrait.find(new)
+            b = a + len(new)
+            if key[1] and a >= 0:
+                extrait = extrait[:a] + extrait[a:b].replace(key[1], f"**{key[1]}**", 1) + extrait[b:]
+            groups[key] = dict(n=0, pages=set(), extrait=extrait.strip())
+        g = groups[key]
+        g["n"] += 1
+        g["pages"].add(str(page))
+    out += [f"{len(log)} corrections, {len(groups)} formes distinctes. Chaque ligne : ce que l'OCR avait lu, ce qui a été "
+            "mis à la place, le nombre de fois, les pages du PDF et un extrait après correction (en gras).", ""]
     rows = []
-    for e in entries.values():
-        items = sorted(e["by"].items())
-        text_dec = items[0][0][1] if len(items) == 1 else " ; ".join(f"{d} (p. {pages(s)})" for (_, d), s in items)
-        rows.append((items[0][0][0], e["word"].lower(), e["word"], pages(e["pages"]), ", ".join(sorted(e["kinds"])), text_dec))
-    rows.sort(key=lambda r: r[:2])
-    todo = sum(1 for r in rows if r[0] == A_VERIFIER)
-    return [f"### Mots inconnus ou douteux ({len(rows)} mots distincts, {len(remarks)} signalements)", "",
-            f"Une ligne par mot, avec toutes ses pages et la décision prise pour l'EPUB. {todo} mot(s) restent à vérifier : "
-            "ils sont en tête de tableau.", ""] + table([r[2:] for r in rows], ["Mot lu", "Pages", "Signalé comme", "Décision pour l'EPUB"]) + [""]
+    for (lu, new), g in sorted(groups.items(), key=lambda kv: kv[0][0].lower()):
+        pages = sorted_pages(g["pages"])
+        rows.append((lu or "(vide)", new or "(supprimé)", g["n"], ", ".join(pages[:12]) + (" …" if len(pages) > 12 else ""),
+                     f"… {g['extrait']} …"))
+    return out + table(rows, ["Lu par l'OCR", "Corrigé en", "Fois", "Pages", "Extrait corrigé"]) + [""]
+
+
+def refused_table(items: list[dict], text: str) -> list[str]:
+    """Annexe : propositions des relecteurs (analyse()) non appliquées alors que la forme lue est toujours dans le
+    texte livré (book_text)."""
+    from propositions_vers_regles import spans
+    rows, seen = [], set()
+    for e in items:
+        # « identique » : raison de check() (simple style d'apostrophe ou d'espace), pas un mot d'une raison de décision
+        if e["etat"] not in ("ecarte", "incertain", "decide") or e["mot"] \
+                or (e["etat"] == "ecarte" and (e["raison"] or "").startswith("identique")):
+            continue
+        key = (e["lu"], e["propose"])
+        if key in seen or not (m := spans(e["lu"], text, 1)):
+            continue
+        seen.add(key)
+        (a, b), = m
+        ex = (text[max(0, a - 40):a] + f"**{text[a:b]}**" + text[b:b + 40]).replace("\n", " / ")
+        rows.append((e["ou"], e["lu"], e["propose"], e["raison"], f"… {ex} …"))
+    out = ["## Annexe C. Propositions de relecture non appliquées", "",
+           "Corrections proposées par la relecture automatique et non appliquées : le texte lu est resté tel quel. "
+           "À parcourir : certaines sont peut-être justes.", ""]
+    if not rows:
+        return out + ["Aucune.", ""]
+    return out + table(rows, ["Où", "Texte lu (conservé)", "Proposition", "Pourquoi non appliquée", "Extrait"]) + [""]
 
 
 def table(rows, head):
@@ -192,6 +331,22 @@ def main():
     content = work / "build" / "content.json"
     if content.exists() and content.stat().st_mtime > epub.stat().st_mtime:
         sys.exit("le texte a changé depuis la construction de l'EPUB : relancer run.py --from build, puis ce script.")
+    if not content.exists():
+        sys.exit("build/content.json absent : lancer run.py d'abord.")
+    from corrections_restantes import restantes, signaler
+    from propositions_vers_regles import analyse
+    text = book_text(data)
+    groups, remarks = load_remarks(work)
+    # calculés une fois : contrôle ci-dessous, puis annexes A et C (noms propres à cet usage : `rows` et `items`
+    # servent plus bas aux tableaux des sections 1 et 5)
+    mots = word_rows(work, data, remarks, text)
+    props = analyse(work, text)
+    todo = restantes(work, data, text, mots, props)
+    if todo:
+        signaler(work, todo)
+        sys.exit(f"Rapport refusé : {len(todo)} correction(s) vérifiée(s) ne sont pas dans le texte (liste ci-dessus et "
+                 "build/relecture/a-corriger.tsv). Traite-les toutes (references/relecture.md, § 3), relance "
+                 "run.py --from extract, puis ce script.")
     problems, checked = audit(rap, Epub(epub))
     if problems:
         sys.exit(f"Le rapport contredit l'EPUB ({len(problems)}) :\n  " + "\n  ".join(problems)
@@ -240,7 +395,7 @@ def main():
                          c.get("page", ""), len(c.get("paras", []))))
         out += table(rows, ["N°", "Titre", "Page du PDF", "Paragraphes"]) + [""]
     figures = [(f["page"], s.get("title") or s["id"], f["after"] + 1, "…" + plain(s["paras"][f["after"]])[-60:])
-               for s in data.get("front", []) + data.get("chapters", []) + data.get("back", []) for f in s.get("figures") or []]
+               for s in sections(data) for f in s.get("figures") or []]
     if figures:
         out += ["**Illustrations** (chacune à la fin du paragraphe indiqué)", ""]
         out += table(figures, ["Page du PDF", "Section", "Paragraphe", "Fin du paragraphe"]) + [""]
@@ -255,6 +410,8 @@ def main():
             line += f" *Traitement :* {p['traite']}"
         if p.get("a_verifier"):
             line += f" *À vérifier :* {p['a_verifier']}"
+        if p.get("dans_epub"):
+            line += " *Extrait de l'EPUB :* " + " ; ".join(f"« {q} »" for q in p["dans_epub"])
         out.append(line)
     qa = [l.strip() for l in read(work / "build" / "qa.txt").splitlines() if l.strip()]
     if qa:
@@ -272,35 +429,26 @@ def main():
             "- [ ] Appartenance des notes, italiques et couverture contrôlés dans une liseuse",
             "- [ ] EPUB accepté", ""]
 
-    groups, remarks = defaultdict(list), []
-    for l in read(work / "build" / "review.txt").splitlines():
-        r = parse_remark(l)
-        if not r:
-            continue
-        page, rest, kind, word = r
-        if word:
-            remarks.append((page, kind, word))
-        else:
-            groups[label(kind)].append(f"p. {page} — {rest}")
     out += ["## Annexe A. Remarques du contrôle orthographique automatique", "",
             "Le contrôle ne connaît que le dictionnaire : une grande partie de ces remarques sont des noms propres ou "
             "des mots étrangers corrects.", ""]
     if remarks:
-        out += word_table(work, data, remarks)
+        out += word_table(mots, len(remarks))
     for name, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         out += [f"### {name} ({len(items)})", ""] + [f"- {x}" for x in items] + [""]
+    out += applied_table(work) + refused_table(props, text)
     if rap.get("reproduction"):
-        out += ["## Annexe B. Pour reconstruire l'EPUB (technique)", "", rap["reproduction"], ""]
+        out += ["## Annexe D. Pour reconstruire l'EPUB (technique)", "", rap["reproduction"], ""]
 
-    text = "\n".join(out)
+    report = "\n".join(out)
     # les remarques de l'annexe A citent le texte du livre : seules les sections rédigées sont contrôlées
-    head = text.split("## Annexe A.")[0]
+    head = report.split("## Annexe A.")[0]
     bad = sorted(set(m.group(0) for m in FORBIDDEN.finditer(head)))
     if bad:
         sys.exit("Le rapport cite des fichiers de travail ou des termes pour l'agent : " + ", ".join(bad)
                  + "\nReformule dans rapport.json en langage clair (ni nom de fichier, ni « sous-agent »).")
     target = work / "build" / "rapport-relecture.md"
-    target.write_text(text, "utf-8")
+    target.write_text(report, "utf-8")
     (work / "build" / "rapport-relecture.epub.sha256").write_text(digest(epub), "utf-8")
     print("rapport écrit :", target)
 

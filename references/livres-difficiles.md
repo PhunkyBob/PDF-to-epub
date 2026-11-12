@@ -55,5 +55,6 @@ Tout ce qui est propre au livre (titres relevés à la main, fusion de faux chap
   seulement les sous-agents manquants.
 - Chaque sous-agent écrit son `prop-*.tsv` (sorties perdues sinon) ; vérifier qu'aucun lot n'en manque.
 - Haiku cite parfois la mauvaise page (±1-2) : vérifier sur l'image avant de corriger.
-- `propositions_vers_regles.py` transforme les propositions de confiance haute en règles candidates ; ne jamais
-  les verser sans test (`apercu.py`) : un essai automatique non filtré a déjà doublé des apostrophes.
+- `propositions_vers_regles.py --appliquer` verse lui-même les propositions de confiance haute dans la section
+  automatique de `fixes.tsv` (boucle de `relecture.md` § 3) ; seules tes règles écrites à la main se testent avec
+  `apercu.py` avant la relance.

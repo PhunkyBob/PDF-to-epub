@@ -19,8 +19,8 @@ leurs réponses.
 - Limite de 20 sous-agents simultanés pour toute la session (orchestrateurs de livres compris) : vagues de 3
   Haiku par livre ; sur « Concurrent subagent limit », attendre 2-3 minutes puis relancer les seuls manquants.
   Détails et cas pratiques : `livres-difficiles.md`.
-- Pour trier les `prop-*.tsv`, `propositions_vers_regles.py` produit des règles candidates filtrées (confiance
-  haute, pas de reformulation) ; elles restent à tester avec `apercu.py` avant de les verser dans `fixes.tsv`.
+- Tu ne recopies pas les `prop-*.tsv` à la main : `propositions_vers_regles.py --appliquer` les verse dans `fixes.tsv`,
+  et `corrections_restantes.py` liste ce qui demande ton jugement (boucle de `relecture.md` § 3).
 - Charge machine : l'OCR occupe tous les cœurs. Un seul OCR à la fois sur la machine, même avec plusieurs livres.
 - Suivi : `WORK/progress.log` (réécrit à chaque lancement) indique l'étape en cours (« étape 2/5 extract »)
   et l'avancement (pages, reste estimé). Lis-le au lieu d'attendre à l'aveugle.
@@ -44,9 +44,9 @@ leurs réponses.
      `build/relecture/mots-in-N.txt` (40 remarques sans verdict, une occurrence par mot inconnu) ; un
      sous-agent par tranche, qui écrit `build/relecture/prop-motsN.tsv` ;
    - sous-agents Haiku « relecture » : `export_review.py` puis un par lot (prompt de `relecture.md`).
-5. Trie toutes les propositions (règles de `relecture.md` § 3), écris `fixes.tsv`, **teste les règles avec
-   `apercu.py`** sur les pages concernées (quelques secondes), puis **une seule** relance complète
-   `run.py --from extract`. Vérifie que les motifs ont disparu de `build/content.json`.
+5. Applique les corrections par la boucle de `relecture.md` § 3 : `propositions_vers_regles.py --appliquer`,
+   `run.py --from extract`, `corrections_restantes.py`, traiter chaque ligne, recommencer jusqu'à « aucune correction
+   restante ». Teste tes règles écrites à la main avec `apercu.py` avant chaque relance.
 
 Plusieurs livres : un dossier de travail par livre ; enchaîne les OCR (un à la fois, en arrière-plan) et
 traite pendant ce temps les étapes de jugement des livres dont l'OCR est fini.
@@ -82,8 +82,10 @@ uv run --project "‹SKILL›" python "‹SKILL›/scripts/render_pages.py" "‹
 Chapitres (page PDF : début lu par l'OCR) :
 ‹p.35 : « D‘ toutes les villes de la péninsule »›
 ‹…›
-Réponds uniquement, une ligne par chapitre :
-page <TAB> début OCR (3-6 mots) <TAB> début imprimé (mêmes mots, corrigés) <TAB> identique (oui/non)
+Écris le résultat (outil Write) dans ‹WORK›/build/relecture/prop-lettrines.tsv et nulle part ailleurs,
+une ligne par chapitre, champs séparés par une tabulation, sans en-tête :
+page <TAB> début OCR recopié tel quel (3-6 mots) <TAB> début imprimé (mêmes mots, corrigés) <TAB> identique (oui/non)
+Réponds seulement « fini, N lignes ».
 ```
 
 ### C. Mots inconnus ou douteux (vérification sur l'image)
@@ -99,8 +101,15 @@ Mots : lis le fichier ‹WORK›/build/relecture/mots-in-N.txt (une remarque par
 Écris le résultat (outil Write) dans ‹WORK›/build/relecture/prop-motsN.tsv et nulle part ailleurs,
 une ligne par remarque, champs séparés par une tabulation, sans en-tête :
 page <TAB> mot OCR (exactement comme entre « » dans la remarque) <TAB> mot imprimé <TAB> verdict
-verdict = « erreur OCR », « correct tel quel » (mot imprimé identique au mot OCR) ou « illisible ».
-Un trait d'union de fin de ligne n'est pas un trait d'union du mot : le signaler dans la réponse.
+Le verdict est l'un de ces quatre, écrit tel quel :
+- « erreur OCR » : l'image porte un autre mot ; 3e champ = le mot que tu lis sur l'image ;
+- « correct tel quel » : l'image porte exactement le mot OCR ; 3e champ = ce même mot ;
+- « coquille » : l'image porte bien le mot OCR, mais c'est une faute d'impression évidente qui n'a qu'une
+  correction possible (« avce ») ; 3e champ = le mot corrigé (« avec ») ; jamais pour un nom propre ou un mot étranger ;
+- « illisible » : tu ne peux pas lire le mot ; 3e champ = « ? ».
+Exemples : 317 <TAB> omée <TAB> ornée <TAB> erreur OCR      |      117 <TAB> geta <TAB> geta <TAB> correct tel quel
+Lis le mot dans sa phrase : le mot imprimé doit donner une phrase qui a un sens.
+Un trait d'union en fin de ligne sur l'image n'est pas un trait d'union du mot : écris le mot sans lui.
 Réponds seulement « fini, N lignes ».
 ```
 

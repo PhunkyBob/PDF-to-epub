@@ -79,6 +79,14 @@ def word_scores(gray: np.ndarray, hocr: str) -> dict[str, tuple[float, float]]:
 
 
 # --------------------------------------------------------------------------- source OCR
+def hocr_complete(f) -> bool:
+    """Tesseract écrit l'en-tête dès son lancement : s'il est interrompu, le fichier existe mais sans page ni pied."""
+    if not f.exists():
+        return False
+    t = f.read_text("utf-8", errors="replace")
+    return "class='ocr_page'" in t and "</html>" in t
+
+
 def ocr_pages(ctx: Ctx, pages: list[int], jobs: int, force: bool, prog: Progress):
     exe = find_tesseract()
     if not exe:
@@ -99,9 +107,10 @@ def ocr_pages(ctx: Ctx, pages: list[int], jobs: int, force: bool, prog: Progress
     def one(p: int):
         base = ctx.ocr / f"page-{p:03d}"
         hocr_f = base.with_suffix(".hocr")
-        if hocr_f.exists() and hocr_f.stat().st_size > 0 and not force:
+        if hocr_complete(hocr_f) and not force:
             return
-        with lock:                                   # pdfium n'est pas thread-safe
+        base.with_suffix(".lost.json").unlink(missing_ok=True)      # calculé sur l'ancien hOCR
+        with lock:                                 # pdfium n'est pas thread-safe
             img = doc[p - 1].render(scale=dpi / 72).to_pil().convert("L")
         png = base.with_suffix(".png")
         img.save(png, dpi=(dpi, dpi), compress_level=1)   # fichier temporaire : pas la peine de bien compresser
@@ -130,6 +139,9 @@ def ocr_pages(ctx: Ctx, pages: list[int], jobs: int, force: bool, prog: Progress
 
     with ThreadPoolExecutor(max_workers=jobs) as ex:
         list(ex.map(counted, pages))
+    bad = [p for p in pages if not hocr_complete(ctx.ocr / f"page-{p:03d}.hocr")]
+    if bad:
+        sys.exit(f"OCR incomplet pour {len(bad)} page(s) : {bad}. Relancer ocr.py : seules ces pages seront refaites.")
 
 
 # --------------------------------------------------------------------------- source couche texte
@@ -200,7 +212,7 @@ def main():
         pages = list(range(a.first or 1, (a.last or n) + 1))
     src = ctx.cfg["source"]
     prog = Progress(ctx.work, "ocr")
-    cached = sum((ctx.ocr / f"page-{p:03d}.hocr").exists() for p in pages) if not a.force else 0
+    cached = sum(hocr_complete(ctx.ocr / f"page-{p:03d}.hocr") for p in pages) if not a.force else 0
     prog.log(f"source « {src} » : {len(pages)} pages, dont {cached} déjà en cache")
     print(f"Source « {src} » : {len(pages)} pages -> {ctx.ocr}")
     if src == "textlayer":
