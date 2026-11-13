@@ -27,7 +27,7 @@ from lxml import etree
 
 from common import (IC, IO, NOTE_BASE, NOTE_END, NOTE_RX, SCENE_MARK, SKILL_DIR, SUB_MARK, WORD_END, WORD_START, Ctx,
                     Progress, ctx_from_args, decision_key, fix_rules, lang_code, parser, plain, read_decisions,
-                    read_shared)
+                    read_shared, straight_apos)
 
 NB = " "
 BB = re.compile(r"bbox (\d+) (\d+) (\d+) (\d+)")
@@ -43,6 +43,7 @@ NOTE_CALL = re.compile(rf"^[\W_]{{0,2}}(?:{_CALL}|\*{{1,3}}\s*)")
 NOTE_CALL_BARE = re.compile(rf"^[\W_]{{0,2}}(?:{_CALL}|\d{{1,3}}\s+(?=[^\d\s])|\*{{1,3}}\s*)")
 # tiret de dialogue mal lu en tête de ligne (« _ Mot », « _— Mot », « —- Mot »)
 BAD_DASH = {"_", "__", "—-", "–-", "-—", "_—", "—_", "_-"}
+DETACHED = 1.3      # ligne de haut de page détachée du texte : la suivante est à plus de 1,3 interligne
 LONE_NUMBER = re.compile(r"^[\W\dIVXLCivxlc|]{1,8}$")   # numéro de chapitre isolé (« 4 », « II », « . 60 13 »)
 CHAPTER_LABEL = re.compile(r"^(chapitre|chapter|cap[ií]tulo|kapitel|capitolo)?\s*([IVXLC]+|\d+)\s*\.?$", re.I)
 # trait d'union suivi d'une espace (ou d'un guillemet parasite), marqueurs d'italique éventuels autour
@@ -63,6 +64,8 @@ class Extractor:
         self.lang = lang_code(self.cfg)
         self.fr = self.lang == "fr"
         self.heads = [self.norm_cmp(h) for h in self.cfg.get("running_heads", [])]
+        self._top = None                                # relevé des hauts de page du livre (top_profile)
+        self.cap_cache: dict[str, str] = {}             # mot à capitale -> forme accentuée (accent_capitals)
         self.note_call = NOTE_CALL_BARE if self.cfg.get("note_call_bare_number") else NOTE_CALL
         self.skip = set(self.cfg["pages"].get("skip", []))
         try:
@@ -103,10 +106,13 @@ class Extractor:
             # {I} : marqueurs internes éventuels (italique, appel de note)
             a = a.replace("{I}", f"[{IO}{IC}{chr(NOTE_BASE)}-{chr(NOTE_END)}]*")
             self.fixes.append((re.compile(a), b.replace("\\t", "\t")))
-        # table partagée de la skill (corrections-ocr.csv) : confusions d'OCR valables pour tout livre de cette langue,
+        # tables partagées de la skill (corrections-ocr.csv et .perso.csv) : confusions d'OCR valables pour tout livre de cette langue,
         # après les règles du livre ; une ligne de decisions.tsv qui garde la forme lue désactive la confusion
         keep = read_decisions(ctx.work)
-        self.fixes += [(re.compile(WORD_START + re.escape(lu) + WORD_END), good.replace("\\", "\\\\"))
+        # apostrophe droite ou courbe : l'OCR lit l'une ou l'autre, et le texte final ne porte plus que « ’ »
+        self.fixes += [(re.compile(WORD_START + "".join("['’‘]" if ch == "'" else re.escape(ch)
+                                                        for ch in straight_apos(lu)) + WORD_END),
+                        good.replace("\\", "\\\\"))
                        for lang, lu, good in read_shared() if lang == self.lang and decision_key(lu) not in keep]
         # les mêmes règles, repassées sur le texte final (typographie faite) : une règle écrite d'après le texte final
         # (celui d'apercu.py et des relecteurs) s'applique aussi ; même indice dans les deux listes : fix_hits
@@ -244,30 +250,130 @@ class Extractor:
         return " ".join(out)
 
     # ------------------------------------------------------------------ nettoyage d'une page
-    def is_running_head(self, text: str) -> bool:
-        core = self.norm_cmp(text)
+    @staticmethod
+    def top_numbers(txt: str) -> set[int]:
+        """Valeurs possibles d'un numéro seul (« 12 », « IV » = 4, « Il » = 11, 2 ou 49) ; ensemble vide sinon."""
+        out = set()
+        if NUM.match(txt):
+            out.add(int(re.sub(r"[Il|]", "1", txt)))
+        if ROMAN.match(txt):
+            for t in {txt, txt.replace("l", "I")}:      # « Il », « VIl » : un I lu l
+                ds = [{"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}[c] for c in t.rstrip(".").lower()]
+                out.add(sum(-d if d < nxt else d for d, nxt in zip(ds, ds[1:] + [0])))
+        return out
+
+    def top_lines(self, H, lines) -> list[tuple[dict, bool, bool]]:
+        """Lignes de la bande haute (header_band) : (ligne, détachée ?, grand corps ?).
+
+        Détachée : séparée de la ligne suivante par plus qu'un interligne normal, ou sans ligne au-dessous. La
+        première ligne du texte ne l'est pas, même quand le texte commence dans la bande. Grand corps : la taille
+        d'un titre (heading_min_size_ratio)."""
+        hb = self.cfg["header_band"] * H
+        band = [ln for ln in lines if ln["t"] < hb and ln.get("lost") != "silence"]   # « — … » : ni en-tête ni folio
+        if not band:
+            return []
+        h = statistics.median(l["b"] - l["t"] for l in lines)
+        rows = []                                       # haut de chaque rangée de lignes
+        for l in lines:
+            if not rows or l["t"] - rows[-1] > 0.5 * h:
+                rows.append(l["t"])
+        steps = [b - a for a, b in zip(rows, rows[1:])]
+        pitch = statistics.median(steps) if len(steps) >= 3 else 1.5 * h      # trop peu de lignes : interligne estimé
+        sizes = [l["xs"] for l in lines if l["xs"]]
+        big = self.cfg["heading_min_size_ratio"] * statistics.median(sizes) if sizes else 0
+        out = []
+        for ln in band:
+            below = next((t for t in rows if t - ln["t"] > 0.5 * h), None)
+            out.append((ln, below is None or below - ln["t"] > DETACHED * pitch, bool(big and ln["xs"] >= big)))
+        return out
+
+    def top_profile(self):
+        """Ce qui revient en haut des pages du livre, relevé une fois : décalages numéro − page des numéros seuls
+        (un folio garde le même d'une page à l'autre), textes détachés de chaque page avec leurs chiffres, et pages
+        où chaque texte apparaît, détaché ou non."""
+        if self._top is None:
+            if self.prog:
+                self.prog.log("repérage des en-têtes courants et des folios")
+            n0 = len(REVIEW)
+            nums, detached, every = {}, {}, {}
+            for f in sorted(self.ctx.ocr.glob("page-*.hocr")):
+                n = int(f.stem.split("-")[1])
+                if n in self.skip:
+                    continue
+                _, H, lines = self.read_page(n)
+                seen = {}                               # texte -> détaché sur cette page ?
+                for ln, alone, _ in self.top_lines(H, lines):
+                    txt = ln["plain"].strip()
+                    vals = self.top_numbers(txt)
+                    if vals:
+                        nums.setdefault(n, set()).update(v - n for v in vals)
+                    elif core := self.norm_cmp(txt):
+                        seen[core] = seen.get(core, False) or alone
+                        if alone:
+                            detached.setdefault(n, {})[core] = re.sub(r"\D", "", txt)
+                for c in seen:
+                    every.setdefault(c, set()).add(n)
+            del REVIEW[n0:]                             # remarques de lecture : refaites quand la page est extraite
+            self._top = nums, detached, every
+        return self._top
+
+    def top_verdict(self, n: int, txt: str, alone: bool, big: bool) -> str:
+        """Sort d'une ligne de la bande haute : « retirer » (en-tête courant ou folio), « texte » (gardée) ou
+        « douteux » (gardée et signalée). La position ne suffit pas : le texte de certains livres commence dans la
+        bande. Un en-tête se reconnaît à ce qu'il est détaché du texte et revient d'une page à l'autre ; un folio,
+        à ce qu'il suit la pagination. Un numéro seul qui ne la suit pas est un numéro de chapitre."""
+        nums, detached, every = self.top_profile()
+        core = self.norm_cmp(txt)
+        if core and any(core == h or (h in core and len(core) - len(h) <= 3) for h in self.heads):
+            return "retirer"                            # running_heads
+        vals = self.top_numbers(txt)
+        if vals:
+            if any(nums.get(m, set()) & {v - n for v in vals} for m in range(n - 4, n + 5) if m != n):
+                return "retirer"                        # folio
+            return "douteux" if alone else "texte"
+        if not alone:
+            # collée au texte : en-tête seulement si elle revient de page en page (4 pages sur les 13 autour).
+            # Une réplique (« — Oui, dit-elle. ») revient aussi en haut de page, mais çà et là : gardée et signalée.
+            at = every.get(core, ())
+            sure = len(core) >= 8 and not big           # assez longue, au corps du texte : retirée d'office
+            if sum(m in at for m in range(n - 6, n + 7)) >= 4:
+                return "retirer" if sure else "douteux"     # en-tête court (« NANA ») ou en grand corps : signalé
+            # ni lettre ni numéro (folio orné « — 12 — », filet) : pas forcément du texte, signalée
+            return "douteux" if not core or (sure and len(at) >= 2) else "texte"
         if not core:
-            return True
-        letters = re.sub(r"[^A-Za-zÀ-ÿ]", "", text)
-        if len(core) >= 3 and letters.isupper() and len(text) <= 70:
-            return True
-        return any(core == h or (h in core and len(core) - len(h) <= 3) for h in self.heads)
+            return "retirer"                            # ni lettre ni numéro : filet, folio orné
+        digits = re.sub(r"\D", "", txt)
+
+        def same_number(d: str, m: int) -> bool:
+            """Mêmes chiffres, ou folio dans l'en-tête (« 12 LE TITRE » p. 14, « 14 LE TITRE » p. 16)."""
+            return d == digits or bool(d and digits and int(d) - m == int(digits) - n)
+
+        # revient, détachée, sur une page voisine (à une erreur de lecture près). Les chiffres comptent : « Lundi 3
+        # mai 1915. » et « Lundi 17 mai 1915. » sont deux lignes du texte, pas un en-tête.
+        if not big and any((c == core or SequenceMatcher(None, core, c).ratio() >= 0.85) and same_number(d, m)
+                           for m in range(n - 6, n + 7) if m != n for c, d in detached.get(m, {}).items()):
+            return "retirer"
+        letters = re.sub(r"[^A-Za-zÀ-ÿ]", "", txt)
+        if len(core) >= 3 and letters.isupper() and len(txt) <= 70:
+            return "retirer"                            # ligne de capitales
+        return "douteux"
 
     def clean_page(self, n, H, lines):
         keep = []
-        hb, fb = self.cfg["header_band"] * H, self.cfg["footer_band"] * H
+        fb = self.cfg["footer_band"] * H
+        tops = {id(ln): (alone, big) for ln, alone, big in self.top_lines(H, lines)}
         for ln in lines:
             txt = ln["plain"].strip()
-            if ln.get("lost") == "silence":             # « — … » en haut ou bas de page : ni en-tête ni folio
-                keep.append(ln)
+            if id(ln) in tops:
+                verdict = self.top_verdict(n, txt, *tops[id(ln)])
+                if verdict == "retirer":
+                    continue
+                if verdict == "douteux":
+                    REVIEW.append(f"p.{n}: ligne en haut de page conservée (en-tête ?) : « {txt[:60]} »")
+            elif ln.get("lost") != "silence" and ln["t"] > fb \
+                    and (NUM.match(txt) or ROMAN.match(txt) or len(txt) <= 3
+                         or (LONE_NUMBER.match(txt) and re.search(r"\d", txt))):   # folio mal lu (« . 60 »)
                 continue
-            if ln["t"] < hb and (self.is_running_head(txt) or NUM.match(txt) or ROMAN.match(txt)):
-                continue
-            if ln["t"] > fb and (NUM.match(txt) or ROMAN.match(txt) or len(txt) <= 3
-                                 or (LONE_NUMBER.match(txt) and re.search(r"\d", txt))):   # folio mal lu (« . 60 »)
-                continue
-            if ln["t"] < hb:
-                REVIEW.append(f"p.{n}: ligne en haut de page conservée (en-tête ?) : « {txt[:60]} »")
             keep.append(ln)
         return keep
 
@@ -642,16 +748,25 @@ class Extractor:
             marks = self.link_notes(n, lines, notes) if notes else []
             self.annotate(lines, W, n)
             self.after_label = False
+            # numéros seuls gardés en haut de page par clean_page (numéro de chapitre, trait lu « | ») : ils sont
+            # au-dessus du texte. La première ligne de la page, pour heading_first_on_page et chapter_top_gap, est
+            # celle qui les suit (`top`).
+            hb = self.cfg["header_band"] * H
+            top = next((i for i, l in enumerate(lines) if l["t"] >= hb or not self.top_numbers(l["plain"].strip())),
+                       len(lines))
+            if 0 < top < len(lines):
+                lines[top]["first"] = True
             if allow_headings and self.cfg.get("first_page_chapter") and n == first and lines:
                 open_heading(n, lines[0]["t"])         # la 1re page du corps ouvre le chapitre 1
             if allow_headings and n in self.cfg.get("chapter_starts", []) and lines and not heading_on_page(n):
                 open_heading(n, lines[0]["t"])         # chapitre que la détection manque : page d'ouverture forcée
             gap = self.cfg.get("chapter_top_gap")      # chapitres sans titre lisible : grand blanc en haut de page
-            if allow_headings and gap and n != first and lines and lines[0]["t"] > gap * H:
+            if allow_headings and gap and n != first and top < len(lines) and lines[top]["t"] > gap * H:
                 if not heading_on_page(n):             # déjà ouvert par chapter_starts : pas de chapitre vide
-                    open_heading(n, lines[0]["t"])
-                if self.lone_number(lines[0]):
-                    lines = lines[1:]                  # le petit numéro de chapitre lu par l'OCR : numérotation régénérée
+                    open_heading(n, lines[top]["t"])
+                # le petit numéro de chapitre lu par l'OCR, en haut de page ou sous le blanc : numérotation régénérée
+                lines = lines[top + 1:] if self.lone_number(lines[top]) else lines[top:]
+                top = 0
             for i, ln in enumerate(lines):
                 if allow_headings and self.cfg.get("lone_numeral_headings") \
                         and re.match(r"^[IVXLCivxlT]{1,6}\.?$", ln["plain"].strip()) and ln["centered"] \
@@ -661,8 +776,8 @@ class Extractor:
                         open_heading(n, ln["b"])
                     prev = None
                     continue
-                if allow_headings and self.lone_number(ln):
-                    nxt = next((x for x in lines[i + 1:] if not self.lone_number(x)), None)
+                if allow_headings and (i < top or self.lone_number(ln)):
+                    nxt = next((x for x in lines[max(i + 1, top):] if not self.lone_number(x)), None)
                     if nxt and self.is_heading(nxt, H):
                         continue                       # numéro de chapitre mal lu au-dessus du titre
                 if allow_headings and self.is_heading(ln, H):
@@ -752,7 +867,9 @@ class Extractor:
                     out = out[:-1] + nxt
                     if f"{left}{right}" not in self.plain_vocab and not self.known(left + right) \
                             and self.autofix_words(left + right) == left + right:
-                        REVIEW.append(f"p.{ln.get('page', '?')}: césure recollée, mot inconnu : « {left}{right} »")
+                        # le mot avec sa casse : le rapport le cherche tel quel dans le texte livré
+                        REVIEW.append(f"p.{ln.get('page', '?')}: césure recollée, mot inconnu : "
+                                      f"« {m.group(1)}{r.group(1)} »")
             elif out.endswith("-") and plain(nxt)[:1].isupper():
                 out = out + nxt
             else:
@@ -762,6 +879,23 @@ class Extractor:
     # ------------------------------------------------------------------ corrections
     GLUED_FIRST_FR = ("cette", "dans", "avec", "pour", "sans", "quand", "comme", "mais", "tout", "tous",
                       "leur", "notre", "votre")
+
+    def accent_capitals(self, text: str) -> str:
+        """Accentue les capitales que le livre imprime sans accent (option accent_capitals) : « A » préposition en
+        tête de phrase (le verbe y prend un trait d'union : « A-t-il »), et le mot à capitale initiale qui n'existe
+        qu'accentué (« Etait », « Ecole »). « Edo », nom propre sans forme accentuée connue, ne change pas."""
+        text = re.sub(rf"(^|[.!?…:»]\s+|[—–«]\s*)([{IO}]?)A(?=\s+[^\W\d_])", r"\1\2À", text)
+        if self.lexicon is None:
+            return text
+
+        def rep(m):
+            w = m.group(0)
+            if w not in self.cap_cache:
+                forms = [a + w[1:] for a in self.CAP_ACCENTS[w[0]] if self.lexicon.lookup(a + w[1:])]
+                plain_ok = w.lower() in self.protected or self.lexicon.lookup(w) or self.lexicon.lookup(w.lower())
+                self.cap_cache[w] = forms[0] if len(forms) == 1 and not plain_ok else w
+            return self.cap_cache[w]
+        return re.sub(r"\b[ACEIOU][a-zà-ÿœ]+\b", rep, text)
 
     def autofix_words(self, text):
         def rep(m):
@@ -915,6 +1049,8 @@ class Extractor:
         if self.fr:                                     # « Il » lu « I ! » : « I ! paraît », « I! les contemplait »
             text = re.sub(rf"(^|[—«.!?…] |^— ?)I ?!(?=\s+[{IO}]?[a-zà-ÿ])", r"\1Il", text)
         text = self.autofix_words(text)
+        if self.fr and self.cfg["accent_capitals"]:
+            text = self.accent_capitals(text)
         text = self.typography(text)
         # second passage sur le texte final : c'est lui que citent les relecteurs et que montre apercu.py
         text = self.apply_fixes(text, page, self.fixes_final, done=raw_hits)

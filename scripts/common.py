@@ -67,6 +67,7 @@ DEFAULTS: dict = {
     "superscript_abbrevs": False,    # français : M<sup>lle</sup>, M<sup>me</sup>, M<sup>gr</sup>, 1<sup>er</sup> si le livre les imprime ainsi
     "chapter_numbers": "roman",   # roman | arabic | none
     "nbsp_before_high_punct": True,
+    "accent_capitals": True,         # français : « A », « Etait », « Ecole » imprimés sans accent -> « À », « Était », « École »
     "scene_breaks": False,           # blanc vertical entre deux paragraphes -> séparateur « * * * »
     "scene_break_gap": 0.9,          # seuil du blanc, en hauteurs de ligne
     "subheadings": False,            # intertitres à la taille du texte : ligne courte centrée entre deux blancs
@@ -342,30 +343,39 @@ def read_decisions(work: Path) -> dict[str, tuple[str, str, str]]:
     return out
 
 
-SHARED = SKILL_DIR / "corrections-ocr.csv"
+# Confusions d'OCR valables pour tout livre d'une langue, deux tables de même format (langue, lu, corrige) :
+SHARED = SKILL_DIR / "corrections-ocr.csv"              # globale : livrée avec la skill, jamais écrite par les scripts
+SHARED_PERSO = SKILL_DIR / "corrections-ocr.perso.csv"  # personnelle : enrichie par livrer.py ou à la main, hors git
 
 
-def read_shared() -> list[tuple[str, str, str]]:
-    """Table partagée entre tous les livres : (langue, mot lu par l'OCR, mot corrigé). Voir corrections-ocr.csv."""
-    if not SHARED.exists():
+def _read_table(path: Path) -> list[tuple[str, str, str]]:
+    if not path.exists():
         return []
-    with SHARED.open(encoding="utf-8-sig", newline="") as f:
+    with path.open(encoding="utf-8-sig", newline="") as f:
         # table éditable à la main : une ligne incomplète (champ manquant : None) est ignorée, elle ne fait pas échouer
         # l'extraction de tous les livres
         rows = [tuple((r.get(k) or "").strip() for k in ("langue", "lu", "corrige")) for r in csv.DictReader(f)]
     return [r for r in rows if r[1] and r[2]]
 
 
-def write_shared(rows: list[tuple[str, str, str]]):
-    """Réécrit la table d'un seul coup (fichier provisoire puis remplacement) : une extraction lancée au même moment
-    pour un autre livre ne lit jamais une table à moitié écrite. Ordre stable d'un lancement à l'autre."""
-    tmp = SHARED.with_name(SHARED.name + ".part")
+def read_shared() -> list[tuple[str, str, str]]:
+    """Les deux tables réunies : (langue, mot lu par l'OCR, mot corrigé). Pour un même mot lu, la table personnelle
+    l'emporte sur la globale."""
+    rows = {(lang, lu): good for lang, lu, good in _read_table(SHARED) + _read_table(SHARED_PERSO)}
+    return [(lang, lu, good) for (lang, lu), good in rows.items()]
+
+
+def add_shared(rows: list[tuple[str, str, str]]):
+    """Ajoute des lignes à la table personnelle, réécrite d'un seul coup (fichier provisoire puis remplacement) : une
+    extraction lancée au même moment pour un autre livre ne lit jamais une table à moitié écrite. Ordre stable d'un
+    lancement à l'autre."""
+    tmp = SHARED_PERSO.with_name(SHARED_PERSO.name + ".part")
     try:
         with tmp.open("w", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
             w.writerow(["langue", "lu", "corrige"])
-            w.writerows(sorted(set(rows), key=lambda r: (r[0], r[1].lower(), r)))
-        tmp.replace(SHARED)
+            w.writerows(sorted(set(_read_table(SHARED_PERSO) + rows), key=lambda r: (r[0], r[1].lower(), r)))
+        tmp.replace(SHARED_PERSO)
     finally:
         tmp.unlink(missing_ok=True)
 

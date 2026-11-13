@@ -47,8 +47,9 @@ achevé d'imprimer, 4e de couverture) sont simplement ignorées.
 
 | Clé | Défaut | Rôle |
 |---|---|---|
-| `running_heads` | `[]` | textes d'en-têtes courants à supprimer en plus de la règle automatique (lignes en capitales en haut de page) |
-| `header_band`, `footer_band` | 0.065, 0.90 | zones (fraction de hauteur) où chercher en-têtes et folios |
+| `accent_capitals` | true | français : accentue les capitales que le livre imprime sans accent, « A » préposition en tête de phrase et les mots qui n'existent qu'accentués (« Etait » → « Était », « Ecole » → « École »). C'est un écart voulu au livre imprimé, à dire dans le rapport (décisions). À `false`, les capitales restent comme imprimées et les propositions `A → À` des relecteurs sont écartées |
+| `running_heads` | `[]` | textes d'en-têtes courants à supprimer en plus de la règle automatique. Celle-ci retire, en haut de page, une ligne détachée du texte (plus de 1,3 interligne avant la suivante) qui revient sur une page voisine, chiffres compris, ou qui est en capitales, une ligne collée au texte qui revient de page en page, et un numéro qui suit la pagination (folio). Une ligne détachée vue une seule fois, ou un numéro hors pagination (numéro de chapitre), est gardée et signalée |
+| `header_band`, `footer_band` | 0.065, 0.90 | zones (fraction de hauteur) où chercher en-têtes et folios. Un texte qui commence dans la zone du haut n'est pas pris pour un en-tête |
 | `heading_min_size_ratio` | 1.2 | taille de police (relative au texte courant) au-delà de laquelle une ligne est un titre ; une ligne ≥ 1,08 centrée et suivie d'un grand blanc est aussi un titre |
 | `chapter_top_gap` | (absent) | livres dont les chapitres n'ont pas de titre lisible (juste un petit numéro) : une page du corps dont la première ligne commence sous cette fraction de la hauteur de page (ex. 0.3) ouvre un chapitre sans titre |
 | `lone_numeral_headings` | false | chapitres introduits par un numéro romain seul (I à XXV), à la taille du texte et parfois au milieu de la page : un numéro romain seul, centré et suivi d'un blanc ouvre un chapitre sans titre (numérotation régénérée) |

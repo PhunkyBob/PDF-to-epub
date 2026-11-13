@@ -52,9 +52,9 @@ def main():
     try:                                   # la skill apprend : confusions d'OCR de ce livre valables pour les suivants
         from propositions_vers_regles import enrichir
         n = enrichir(work)
-        print(f"table partagée corrections-ocr.csv : {n} confusion(s) d'OCR ajoutée(s)")
+        print(f"table personnelle corrections-ocr.perso.csv : {n} confusion(s) d'OCR ajoutée(s)")
     except OSError as e:
-        print("table partagée corrections-ocr.csv non mise à jour :", e)
+        print("table personnelle corrections-ocr.perso.csv non mise à jour :", e)
 
 
 if __name__ == "__main__":

@@ -143,12 +143,14 @@ Recopie ce qui est imprimé, même si cela semble fautif. Réponds seulement « 
 
 ```
 Lis avec Read les images ‹WORK›/build/relecture/ponctuation-N.png (‹liste des N›) et les fichiers
-‹WORK›/build/relecture/ponctuation-in-N.tsv (colonnes : numéro, page, mot lu par l'OCR, mot suivant).
+‹WORK›/build/relecture/ponctuation-in-N.tsv (colonnes : numéro, page, mot lu par l'OCR, mot suivant, puis les mots
+qui l'entourent, qui ne te servent pas).
 Chaque case porte un numéro rouge ; le mot à juger est souligné en rouge. Regarde le signe imprimé juste après ce mot :
 un point est rond et posé sur la ligne ; une virgule descend sous la ligne avec une petite queue ; des points de
 suspension sont trois points. Compare avec les autres signes de la case. Ne juge que le signe, pas le sens.
 Écris dans ‹WORK›/build/relecture/prop-ponctuation‹K›.tsv et nulle part ailleurs, une ligne par numéro, sans en-tête :
 numéro <TAB> page <TAB> mot <TAB> verdict (« point », « virgule », « suspension » ou « illisible »)
+Recopie le numéro, la page et le mot tels qu'ils sont dans le fichier ponctuation-in-N.tsv.
 Réponds seulement « fini, N lignes ».
 ```
 

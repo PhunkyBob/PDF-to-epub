@@ -73,7 +73,7 @@ def decision(ocr: str, verdict: tuple | None, final: str | None, in_text, chosen
     form = bare(ocr)
 
     def res(cat, texte, imprime="", attendu="", bloquant=False):
-        epub = final or (attendu if attendu and in_text(attendu) and not in_text(form) else form if in_text(form) else "")
+        epub = final or (in_text(attendu) if attendu and in_text(attendu) and not in_text(form) else in_text(form))
         return dict(cat=cat, texte=texte, imprime=imprime, epub=epub, attendu=attendu, bloquant=bloquant,
                     verifie=bool(chosen) or verdict is not None)
 
@@ -109,7 +109,7 @@ def decision(ocr: str, verdict: tuple | None, final: str | None, in_text, chosen
     if applied(target):
         return res(CORRIGE, f"Corrigé en « {target} », lu par le relecteur sur la page", target, target)
     if final or in_text(form):
-        return res(A_VERIFIER, f"NON CORRIGÉ : le relecteur a lu « {target} » sur la page, l'EPUB contient « {final or form} »", target, target, True)
+        return res(A_VERIFIER, f"NON CORRIGÉ : le relecteur a lu « {target} » sur la page, l'EPUB contient « {final or in_text(form)} »", target, target, True)
     return res(A_VERIFIER, f"Corrigé d'après le relecteur (« {target} ») : forme finale à vérifier", target, target)
 
 
@@ -197,11 +197,15 @@ def word_rows(work: Path, data: dict, remarks: list, text: str | None = None) ->
     text : book_text(data), s'il est déjà calculé."""
     if text is None:
         text = book_text(data)
-    found: dict[str, bool] = {}                      # une recherche sur tout le livre par forme, pas par remarque
+    found: dict[str, str] = {}                       # une recherche sur tout le livre par forme, pas par remarque
 
-    def in_text(form: str) -> bool:
+    def in_text(form: str) -> str:
+        """La forme telle qu'elle est dans le texte livré, « » si elle n'y est pas. La majuscule de début de phrase
+        est admise : le relecteur écrit « faites-les », le texte porte « Faites-les »."""
         if form not in found:
-            found[form] = bool(form) and re.search(word_rx(form), text) is not None
+            # dict.fromkeys : une forme qui commence déjà par une majuscule n'est cherchée qu'une fois
+            found[form] = next((f for f in dict.fromkeys((form, form[:1].upper() + form[1:]))
+                                if f and re.search(word_rx(f), text)), "")
         return found[form]
 
     find = locator(work, data)

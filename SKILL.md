@@ -117,7 +117,10 @@ Puis les remarques :
 - `début du chapitre N (lettrine ?)` : la grande initiale est souvent mal lue (ex. « a Que » pour « — Qu’en », la grande initiale ayant été remplacée ou perdue) → corriger ;
 - `mot inconnu … -> « x » ?` : la suggestion du dictionnaire est **souvent fausse** (mots rares, noms propres,
   mots étrangers). Vérifie sur l'image de la page (`render_pages.py`) avant de corriger ;
-- `mot douteux`, `caractère parasite`, `ligne en haut de page conservée` : à vérifier de même ;
+- `mot douteux`, `caractère parasite` : à vérifier de même ;
+- `ligne en haut de page conservée` : ligne isolée en haut de page, ni en-tête courant ni folio reconnu. Regarde
+  l'image : numéro ou titre de chapitre (vérifie qu'un chapitre s'ouvre bien à cette page), en-tête lu une seule
+  fois (l'ajouter à `running_heads`), ou vrai texte (rien à faire) ;
 - `abréviation douteuse` : Mme ou Mlle en exposant lus « Me », « Mre » : à vérifier de même ;
 - `ligne perdue par l'OCR puis relue` / `encre non lue` : ligne imprimée que Tesseract n'a pas lue. Vérifie la relecture
   sur l'image ; une zone `encre non lue` qui est du texte s'ajoute par `fixes.tsv` (ou se note dans le rapport) ;
@@ -203,7 +206,8 @@ puis lance **dans un même message** (prompts dans `references/orchestration.md`
   leurs verdicts avec `italiques.py --work "WORK" --appliquer` : la mesure d'inclinaison seule ne suffit pas ;
 - un sous-agent Haiku « notes » : chaque appel, le texte et l'italique de chaque note, sur l'image (prompt E) ;
 - des sous-agents Haiku « ponctuation », sur les planches de `lots_ponctuation.py --work "WORK"` (prompt G) : un point
-  devant un nom propre est souvent une virgule mal lue, et seule l'image tranche ;
+  devant un nom propre est souvent une virgule mal lue, et seule l'image tranche. Leurs verdicts
+  (`prop-ponctuationK.tsv`) sont versés dans `fixes.tsv` par la boucle ci-dessous, comme les autres propositions ;
 - des sous-agents Haiku « mots », un par tranche de 40 remarques `mot inconnu` / `mot douteux`, préparées par
   `lots_mots.py --work "WORK"` (`build/relecture/mots-in-N.txt` → `prop-motsN.tsv`) : seules les remarques
   sans verdict partent, une seule occurrence par mot inconnu ;
@@ -275,12 +279,14 @@ complète, dis-le clairement : ne présente pas l'EPUB comme relu.
 - **lignes_perdues.py** : compare l'image à l'OCR. Les réponses muettes (« — … », jamais lues par Tesseract) sont reconnues
   à leur forme, les autres lignes manquantes sont relues seules et réinjectées si la lecture est sûre (confiance ≥ 70),
   sinon signalées. Résultat en cache (`page-NNN.lost.json`) ; pour un livre déjà passé par l'OCR, lancer ce script seul.
-- **lots_ponctuation.py** : planches des points placés devant un nom propre, à juger sur l'image (prompt G).
+- **lots_ponctuation.py** : planches des points placés devant un nom propre, à juger sur l'image (prompt G). Chaque
+  verdict « virgule » ou « suspension » devient une règle limitée à son endroit (`propositions_vers_regles.py`).
 - **italiques.py** : cale la fenêtre d'inclinaison sur l'italique réelle du livre, classe les mots en sûrs et
   douteux, et prépare les planches des douteux. Les verdicts de `WORK/italiques.tsv` l'emportent sur la mesure.
 - **illustrations.py** : repère l'encre hors des mots lus (pages `skip` comprises), recadre les images (gris, fond blanchi) et les
   rattache au paragraphe qui contient les derniers mots imprimés avant elles (`figures` dans `content.json`, texte inchangé).
-- **extract_text.py** : supprime en-têtes (capitales en haut de page, `running_heads`), folios et numéros de
+- **extract_text.py** : supprime les en-têtes courants (ligne détachée du texte en haut de page, qui revient d'une
+  page à l'autre ou en capitales ; `running_heads`), les folios (numéro qui suit la pagination) et les numéros de
   chapitre isolés au-dessus du titre ; sépare les notes de bas de page (petit corps) ; recolle les
   lignes en paragraphes (retrait, tiret de dialogue, ligne courte), y compris entre deux pages ; recolle les
   césures en gardant les vrais traits d'union (vocabulaire du livre + règles du français), y compris celles que
@@ -301,11 +307,14 @@ complète, dis-le clairement : ne présente pas l'EPUB comme relu.
   écrit dans la section automatique de `fixes.tsv` (tes règles à la main, hors de cette section, ne sont jamais touchées).
   Les règles automatiques ne changent que les mots fautifs.
 - **corrections_restantes.py** : liste les corrections vérifiées absentes du texte, avec ce qu'il faut faire pour chacune.
-- **corrections-ocr.csv** (dans `SKILL`) : table partagée entre tous les livres (`langue,lu,corrige`) des confusions d'OCR
-  qui valent partout : un mot qui n'existe pas, corrigé en un mot du dictionnaire. Appliquée à chaque extraction,
-  enrichie par `livrer.py` à chaque livraison (confusion relevée au moins deux fois dans le livre). Rien de propre à un livre n'y entre (noms propres, mots du livre) : cela
-  reste dans le `fixes.tsv` du livre. Tu peux y ajouter une ligne à la main ; une ligne de `decisions.tsv` qui garde la
-  forme lue désactive une confusion pour un livre.
+- **corrections-ocr.csv** et **corrections-ocr.perso.csv** (dans `SKILL`) : tables partagées entre tous les livres
+  (`langue,lu,corrige`) des confusions d'OCR qui valent partout : un mot qui n'existe pas, corrigé en un mot du
+  dictionnaire. Les deux sont appliquées à chaque extraction. La première est la table globale, livrée avec la skill :
+  aucun script ne l'écrit. La seconde est la table personnelle, absente du dépôt (ignorée par git) : `livrer.py`
+  l'enrichit à chaque livraison (confusion relevée au moins deux fois dans le livre), et c'est là que tu ajoutes une
+  ligne à la main ; pour un même mot lu, elle l'emporte sur la globale. Rien de propre à un livre n'y entre (noms
+  propres, mots du livre) : cela reste dans le `fixes.tsv` du livre. Une ligne de `decisions.tsv` qui garde la forme
+  lue désactive une confusion pour un livre.
 - **livrer.py** : copie l'EPUB et le rapport de relecture dans le dossier du PDF d'origine.
 - **rapport_humain.py** : écrit le rapport de relecture pour un humain (`build/rapport-relecture.md`) à partir de
   `rapport.json` (rédigé par l'agent) et des contrôles automatiques.

@@ -3,7 +3,9 @@
 
 La chaîne corrige seule le point devant une minuscule. Devant une majuscule, seule l'image tranche (« Eh. Marie ? »).
 Noms propres : mots à majuscule rencontrés au moins 3 fois en milieu de phrase. Sortie dans build/relecture :
-ponctuation-N.png (planches, 28 cas numérotés, le mot à juger souligné en rouge) et ponctuation-in-N.tsv.
+ponctuation-N.png (planches, 28 cas numérotés, le mot à juger souligné en rouge) et ponctuation-in-N.tsv
+(numéro, page, mot, mot suivant, deux mots d'avant, mot d'après : le contexte sert à propositions_vers_regles.py pour
+écrire une règle qui ne touche que cet endroit).
 
 Usage : lots_ponctuation.py --work DOSSIER
 """
@@ -49,9 +51,10 @@ def main():
     for n, ws in sorted(pages.items()):
         if not p["body_first"] <= n <= p["body_last"]:
             continue
-        for (cur, box), (nxt, _) in zip(ws, ws[1:]):
+        for i, ((cur, box), (nxt, _)) in enumerate(zip(ws, ws[1:])):
             if re.fullmatch(r"[^\W\d_’'-]+(?:[’'-][^\W\d_]+)*\.", cur) and nxt.strip(".,;:!?«»") in names:
-                cases.append((n, cur, nxt, box))
+                before = " ".join(w for w, _ in ws[max(0, i - 2):i])
+                cases.append((n, cur, nxt, box, before, ws[i + 2][0] if i + 2 < len(ws) else ""))
     out = ctx.build / "relecture"
     out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("ponctuation-*"):
@@ -68,7 +71,7 @@ def main():
         sheet = Image.new("RGB", (CELL_W * COLS, CELL_H * ROWS), "white")
         d = ImageDraw.Draw(sheet)
         rows = []
-        for i, (n, cur, nxt, (l, t, r, b)) in enumerate(chunk):
+        for i, (n, cur, nxt, (l, t, r, b), before, after) in enumerate(chunk):
             if n != last_page:
                 g, last_page = doc[n - 1].render(scale=ctx.cfg["dpi"] / 72).to_pil().convert("RGB"), n
             x0, y0 = max(0, l - 150), max(0, t - 14)
@@ -77,7 +80,7 @@ def main():
             x, y = (i // ROWS) * CELL_W, (i % ROWS) * CELL_H
             d.text((x + 4, y + 2), str(start + i + 1), fill="red", font=font)
             sheet.paste(crop, (x + 60, y + 6))
-            rows.append(f"{start + i + 1}\t{n}\t{cur}\t{nxt}")
+            rows.append(f"{start + i + 1}\t{n}\t{cur}\t{nxt}\t{before}\t{after}")
         sheet.save(out / f"ponctuation-{s}.png")
         (out / f"ponctuation-in-{s}.tsv").write_text("\n".join(rows) + "\n", "utf-8")
     print(f"{len(cases)} cas, {(len(cases) + size - 1) // size} planche(s) -> {out}")

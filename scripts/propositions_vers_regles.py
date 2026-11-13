@@ -2,7 +2,8 @@
 
 Lit WORK/build/relecture/prop-lot*.tsv     (id <TAB> fragment erroné <TAB> fragment corrigé <TAB> confiance),
                          prop-lettrines.tsv (page <TAB> début OCR <TAB> début imprimé <TAB> identique oui/non)
-et                       prop-mots*.tsv     (page <TAB> mot OCR <TAB> mot imprimé ou corrigé <TAB> verdict),
+                         prop-mots*.tsv     (page <TAB> mot OCR <TAB> mot imprimé ou corrigé <TAB> verdict)
+et                       prop-ponctuation*.tsv (numéro <TAB> page <TAB> mot <TAB> verdict, cas de ponctuation-in-N.tsv),
 ainsi que WORK/decisions.tsv (forme lue <TAB> forme retenue <TAB> raison : arbitrages et refus de l'orchestrateur).
 
 Écrit WORK/build/relecture/regles-candidates.tsv (même format que fixes.tsv) et regles-ecartees.txt (propositions
@@ -14,7 +15,8 @@ Par défaut une proposition devient une règle. Elle n'est écartée que dans ce
   * confiance « basse » ; fragment identique ou trop court (< 3 caractères) ;
   * reformulation : des lettres ajoutées ou retirées avec un nombre de mots différent, ou un mot remplacé par un mot
     sans rapport (un mot collé ou coupé, « sielle » -> « si elle », n'est pas une reformulation) ;
-  * appel de note (« Marie8 » -> « Marie ») ; accent ajouté sur une capitale (« A » -> « À ») ; apostrophe doublée ;
+  * appel de note (« Marie8 » -> « Marie ») ; apostrophe doublée ; accent ajouté sur une capitale (« A » -> « À »)
+    si l'option accent_capitals du livre est à false ;
   * fragment absent du texte (déjà corrigé) ;
   * fragment présent plusieurs fois alors que le mot erroné est un vrai mot du dictionnaire (« la met » -> « la mer »
     casserait les autres « la met ») : règle à écrire à la main avec plus de contexte ;
@@ -30,8 +32,8 @@ from difflib import SequenceMatcher
 from functools import cache
 from pathlib import Path
 
-from common import (EDGE_PUNCT, SKILL_DIR, WORD_END, WORD_START, book_text, decision_key, fix_rules, iter_prop_mots,
-                    lang_code, read_decisions, read_shared, write_shared)
+from common import (DEFAULTS, EDGE_PUNCT, SKILL_DIR, deep_merge, WORD_END, WORD_START, book_text, decision_key, fix_rules, iter_prop_mots,
+                    add_shared, lang_code, read_decisions, read_shared)
 
 APOS = "['’‘]"
 BEGIN = "# >>> RÈGLES AUTOMATIQUES (propositions_vers_regles.py) : section réécrite à chaque lancement, ne rien y écrire"
@@ -59,7 +61,9 @@ def spans(frag: str, text: str, limit: int = 0) -> list[tuple[int, int]]:
     au moteur de sauter d'une occurrence du premier caractère à la suivante, et coûte vingt fois plus sur un livre."""
     rx = to_regex(frag)
     bounded = rx.startswith(WORD_START)
-    pat = re.compile(rx.removeprefix(WORD_START))
+    # le texte a un paragraphe par ligne et une règle s'applique paragraphe par paragraphe : une occurrence à cheval
+    # sur deux paragraphes (« … tard. » puis « Ikuyo… ») n'en est pas une
+    pat = re.compile(rx.removeprefix(WORD_START).replace(r"\s+", r"[^\S\n]+"))
     out, pos = [], 0
     while (not limit or len(out) < limit) and (m := pat.search(text, pos)):
         if bounded and m.start() and re.match(r"[\w'’]", text[m.start() - 1]):
@@ -115,8 +119,8 @@ def token_pairs(bad: str, good: str) -> list[tuple[str, str]]:
     return [(x, y) for x, y in zip(b, g) if x != y]
 
 
-def check(bad: str, good: str) -> str | None:
-    """Raison d'écarter la proposition, ou None si elle est acceptable."""
+def check(bad: str, good: str, accents: bool = True) -> str | None:
+    """Raison d'écarter la proposition, ou None si elle est acceptable. accents : option accent_capitals du livre."""
     bad, good = norm(bad), norm(good)
     if bad == good:
         return "identique (style d'apostrophe ou d'espace)"
@@ -126,9 +130,9 @@ def check(bad: str, good: str) -> str | None:
         return "appel de note (placé par la chaîne, voir note_anchors)"
     if len(bad.split()) != len(good.split()) and letters(bad) != letters(good):
         return "reformulation (mots ajoutés ou retirés)"
-    if len(bad) == len(good) and all(x == y or (x.isupper() and unicodedata.normalize("NFD", y)[:1] == x)
-                                     for x, y in zip(bad, good)):
-        return "capitale accentuée (« A » -> « À ») : le livre n'accentue peut-être pas les capitales"
+    if not accents and len(bad) == len(good) and all(
+            x == y or (x.isupper() and unicodedata.normalize("NFD", y)[:1] == x) for x, y in zip(bad, good)):
+        return "capitale accentuée (« A » -> « À ») : accent_capitals est à false, les capitales restent comme imprimées"
     if "''" in good:                                # norm() a déjà ramené ’ à '
         return "apostrophe doublée"
     for x, y in token_pairs(bad, good):
@@ -163,10 +167,14 @@ def is_word(w: str, lang: str, default: bool = True) -> bool:
     return default if lex is None else bool(lex.lookup(w) or lex.lookup(w.lower()))
 
 
-def book_lang(work: Path) -> str:
+def book_cfg(work: Path) -> dict:
+    """book.json avec les valeurs par défaut ; sans fichier, les défauts seuls."""
     f = work / "book.json"
-    cfg = json.loads(f.read_text("utf-8")) if f.exists() else {}
-    return lang_code(cfg)
+    return deep_merge(DEFAULTS, json.loads(f.read_text("utf-8")) if f.exists() else {})
+
+
+def book_lang(work: Path) -> str:
+    return lang_code(book_cfg(work))
 
 
 def auto_section(fixes: Path) -> tuple[set[str], dict[str, int]]:
@@ -204,6 +212,46 @@ def proposals(rel: Path):
             yield f.name, f"p. {p[0].removeprefix('p.').strip()} (début de chapitre)", p[1], p[2], True
 
 
+SIGNS = {"virgule": ",", "suspension": "…"}         # verdicts de ponctuation qui changent le point lu par l'OCR
+
+
+def punctuation(rel: Path):
+    """Verdicts des sous-agents « ponctuation » qui changent le signe : (source, où, [(fragment lu, fragment corrigé)]).
+
+    Les fragments vont du plus court (« malade. Tomoko ») au plus long (deux mots avant, un après) : analyse() garde le
+    premier qui n'est qu'une fois dans le texte, car « malade. Tomoko » peut être juste ailleurs dans le livre.
+    Un verdict est rattaché à son cas par son numéro ; si le mot ne correspond pas (numérotation reprise à 1 par le
+    sous-agent), par son rang dans la planche de même numéro. Sans cas retrouvé : le mot seul, confiance basse."""
+    def num(f):
+        return int(re.search(r"(\d+)\.tsv$", f.name).group(1))
+
+    def rows(f):
+        return [[x.strip() for x in r.split("\t")] for r in f.read_text("utf-8-sig").splitlines() if r.strip()]
+
+    by_num, by_sheet = {}, {}
+    for f in rel.glob("ponctuation-in-*.tsv"):
+        by_sheet[num(f)] = [c + [""] * (6 - len(c)) for c in rows(f) if len(c) >= 4]
+        by_num.update((c[0], c) for c in by_sheet[num(f)])
+    for f in sorted(rel.glob("prop-ponctuation*.tsv"), key=num):
+        for i, c in enumerate(rows(f)):
+            sign = next((s for v, s in SIGNS.items() if len(c) >= 4 and c[3].lower().startswith(v)), None)
+            if not sign:
+                continue
+            case = by_num.get(c[0])
+            if not case or case[2] != c[2]:
+                sheet = by_sheet.get(num(f), [])
+                case = sheet[i] if i < len(sheet) and sheet[i][2] == c[2] else None
+            if case is None:
+                yield f.name, f"p. {c[1]}", [(c[2], c[2].rstrip(".") + sign)], False
+                continue
+            _, page, cur, nxt, before, after = case[:6]
+            fixed = cur.rstrip(".") + sign
+            ctx = [("", ""), (" ".join(before.split()[-1:]), ""), (before, ""), (before, after)]
+            frags = dict.fromkeys((" ".join(x for x in (b, cur, nxt, a) if x), " ".join(x for x in (b, fixed, nxt, a) if x))
+                                  for b, a in ctx)
+            yield f.name, f"p. {page}", list(frags), True
+
+
 def analyse(work: Path, text: str | None = None) -> list[dict]:
     """Une entrée par proposition : source, ou, lu, propose, etat, raison, regle (regex, remplacement) ou None.
 
@@ -220,7 +268,8 @@ def analyse(work: Path, text: str | None = None) -> list[dict]:
     if text is None:
         text = book_text(json.loads(content.read_text("utf-8"))) if content.exists() else ""
     decisions = read_decisions(work)
-    lang = book_lang(work)
+    cfg = book_cfg(work)
+    lang, accents = lang_code(cfg), bool(cfg["accent_capitals"])
     auto, ctx_seen = auto_section(work / "fixes.tsv")
     counts: dict[str, int] = {}
 
@@ -235,6 +284,12 @@ def analyse(work: Path, text: str | None = None) -> list[dict]:
     out = []
     for src, where, bad, good, sure in proposals(rel):
         out.append(dict(source=src, ou=where, lu=bad, propose=good, sure=sure, mot=False))
+    for src, where, frags, sure in punctuation(rel):
+        # le fragment dont la règle est déjà écrite, sinon le premier qui n'est qu'une fois dans le texte : une fois
+        # l'endroit corrigé, les fragments ne s'y trouvent plus et le choix changerait, donc la règle disparaîtrait
+        bad, good = (next((fr for fr in frags if to_rule(*fr)[0] in auto), None)
+                     or next((fr for fr in frags if count(fr[0]) == 1), frags[0]))
+        out.append(dict(source=src, ou=where, lu=bad, propose=good, sure=sure, mot=False, seul=True))
     for page, bad, good, verdict in iter_prop_mots(rel):
         v = verdict.lower()
         if "erreur" in v or v.startswith("coquille"):
@@ -244,7 +299,7 @@ def analyse(work: Path, text: str | None = None) -> list[dict]:
     # même mot erroné, corrections différentes -> conflit (sauf décision de l'orchestrateur)
     goods: dict[str, dict[str, str]] = {}            # clé du mot lu -> {clé de la correction: correction proposée}
     for e in out:
-        e["raison"] = check(e["lu"], e["propose"])
+        e["raison"] = check(e["lu"], e["propose"], accents)
         e["ecart"] = "ecarte"
         if not e["sure"] and not e["raison"]:                    # à voir sur l'image : corrections_restantes.py
             e["ecart"], e["raison"] = "incertain", "confiance basse : à vérifier sur l'image"
@@ -293,9 +348,11 @@ def analyse(work: Path, text: str | None = None) -> list[dict]:
                 # Sans cette mémoire, la proposition redeviendrait une règle et casserait les occurrences justes.
                 e["etat"], e["contexte"] = "manuel", (rx, n0)
                 e["raison"] = f"corrigée par une règle à la main avec contexte ; {n} autre(s) occurrence(s) conservée(s)"
-            elif n > 1 and all(is_word(x, lang) for x, _ in pairs):
+            elif n > 1 and (e.get("seul") or all(is_word(x, lang) for x, _ in pairs)):
+                # `seul` (ponctuation jugée à un endroit) : le même fragment est peut-être juste ailleurs
                 e["etat"], e["contexte"] = "contexte", (rx, max(n, n0))
-                e["raison"] = f"vrai mot et fragment présent {n} fois : règle à écrire avec plus de contexte"
+                e["raison"] = (f"fragment présent {n} fois, jugé à un seul endroit" if e.get("seul") else
+                               f"vrai mot et fragment présent {n} fois") + " : règle à écrire avec plus de contexte"
             else:
                 e["etat"] = "regle"
         del e["ecart"]
@@ -317,14 +374,13 @@ def analyse(work: Path, text: str | None = None) -> list[dict]:
 
 
 def enrichir(work: Path) -> int:
-    """Ajoute à la table partagée de la skill (corrections-ocr.csv) les confusions d'OCR de ce livre qui valent pour
-    tout livre de la même langue : un mot lu qui n'existe pas, corrigé en un mot du dictionnaire. Les noms propres et
+    """Ajoute à la table personnelle (corrections-ocr.perso.csv) les confusions d'OCR de ce livre qui valent pour
+    tout livre de la même langue et ne sont dans aucune des deux tables : un mot lu qui n'existe pas, corrigé en un mot du dictionnaire. Les noms propres et
     les mots du livre (absents du dictionnaire) n'y entrent pas : ils restent dans le fixes.tsv du livre."""
     lang = book_lang(work)
     if lexicon(lang) is None:
         return 0
-    table = read_shared()
-    known = {(l, lu) for l, lu, _ in table}
+    known = {(l, lu) for l, lu, _ in read_shared()}
     new = []
     edge = EDGE_PUNCT + "—"
     seen = Counter((x.strip(edge), y.strip(edge).replace("'", "’"))
@@ -338,7 +394,7 @@ def enrichir(work: Path) -> int:
             known.add((lang, x))
             new.append((lang, x, y))
     if new:
-        write_shared(table + new)
+        add_shared(new)
     return len(new)
 
 

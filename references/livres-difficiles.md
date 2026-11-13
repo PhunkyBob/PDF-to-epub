@@ -21,8 +21,9 @@ symptôme dans `review.txt`, la cause et l'option de `book.json` qui le résout 
 - **Ombre de marge** d'un scan : caractères parasites en début de ligne (`_`, `‘`, `|`, lettres collées). Compter ~1 000
   remarques en plus dans `review.txt` ; la relecture complète par Haiku est indispensable, et des règles
   générales (début/fin de paragraphe) valent mieux que des cas isolés.
-- **Capitales non accentuées** dans le livre imprimé (« A la voix », « Etait ») : ne pas accepter les propositions
-  `A → À`. Vérifier sur une page imprimée avant de décider.
+- **Capitales non accentuées** dans le livre imprimé (« A la voix », « Etait ») : la chaîne les accentue
+  (`accent_capitals`, vrai par défaut) et le dit dans le rapport. Pour rester fidèle à l'imprimé, mettre l'option à
+  `false`.
 - **« Il » lu `II`, `1l`, `11`, `I]`, `H`, `IT`** et point lu à la place d'une virgule devant une minuscule : deux
   règles générales font l'essentiel du travail.
 - **Dates** dont le « 1 » est lu « 7 » (`(7912-1950)`), `yin/yang` lus `vin/vang` : règles ciblées après vérification.

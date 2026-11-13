@@ -60,7 +60,8 @@ dit seulement quoi faire de chaque ligne.
 ### Ce que le script écarte tout seul (rien à faire)
 
 Reformulation (mots ajoutés ou retirés, mot remplacé par un mot sans rapport) ; appel de note (« Marie8 » → « Marie » :
-la chaîne place les appels, voir `note_anchors`) ; accent ajouté sur une capitale (« A » → « À ») ; fragment déjà corrigé.
+la chaîne place les appels, voir `note_anchors`) ; accent ajouté sur une capitale (« A » → « À ») quand
+`accent_capitals` est à `false` ; fragment déjà corrigé.
 Ces propositions sont listées dans l'annexe C du rapport avec leur raison : le lecteur humain les verra.
 
 ### Que faire de chaque ligne de `corrections_restantes.py`

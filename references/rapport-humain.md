@@ -15,7 +15,7 @@ prises, avec les pages.
   "relecture": "Tout le texte a été relu par un relecteur automatique (7 lots sur 7), les mots douteux (456) et les 42 débuts de chapitre ont été vérifiés sur l'image des pages. 160 corrections générales ont été appliquées ; ... ce qui n'a PAS été fait : ...",
   "decisions": [
     {"sujet": "Pages exclues", "decision": "p. 2-6 et 293-300", "pourquoi": "pages blanches, achevé d'imprimer, quatrième de couverture"},
-    {"sujet": "Majuscules accentuées", "decision": "« A » et « Etait » non accentués", "pourquoi": "le livre imprimé n'accentue pas les capitales (vérifié p. 139)"}
+    {"sujet": "Majuscules accentuées", "decision": "« A » et « Etait » accentués en « À » et « Était »", "pourquoi": "le livre imprimé n'accentue pas les capitales (vérifié p. 139) ; écart voulu, conforme à l'usage typographique"}
   ],
   "points": [
     {"ou": "p. 205 (note)", "constat": "« 1255-1205 » : date probablement mal lue", "traite": "laissé tel quel", "a_verifier": "relire la date sur la page imprimée", "dans_epub": ["régna sur la province de 1255-1205 avant"]}
