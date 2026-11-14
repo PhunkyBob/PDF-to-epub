@@ -51,10 +51,20 @@ Règles d'écriture :
 | `points`, `decisions` | `"dans_epub": ["…"]` : extraits recopiés de l'EPUB | chaque extrait y figure, en mots entiers |
 | `points`, `decisions` | `"plus_dans_epub": ["…"]` : formes corrigées | aucune n'y figure encore |
 
+**Extrait pour chaque mot cité.** Le lecteur doit retrouver chaque mot cité sans ouvrir le PDF : dans une décision comme
+dans un point, tout mot ou groupe de mots entre « » (« anatomine » → « anatomie » (p. 18)) est imprimé avec un extrait de
+l'EPUB qui le contient, le mot en gras (colonne « Extrait de l'EPUB » des décisions, mention du même nom dans les points).
+**Le script cherche l'extrait seul** : aux pages citées dans l'entrée (« p. 18 », « p. 18–19 »), sinon à la première
+occurrence du mot dans le livre. Ce que tu fais :
+- écris le mot **entre « »**, tel qu'il est dans l'EPUB (pour une correction : la forme lue et la forme corrigée), et **la page** ;
+- si le mot est courant ou si l'extrait trouvé n'est pas le bon endroit, recopie toi-même la phrase dans `dans_epub` : un
+  mot déjà contenu dans un extrait de `dans_epub` n'est pas cherché ;
+- `"dans_epub": []` : les citations de l'entrée ne sont pas du texte du livre, aucun extrait n'est cherché.
+
 `dans_epub` est **obligatoire** pour tout point dont le constat ou le traitement contient une citation « … », et pour la
 décision « Écarts volontaires au PDF » ; une liste vide indique que la citation n'est pas du texte du livre. Recopie-y ce
 que dit l'EPUB, pas ce que dit l'image : **un morceau de la phrase (5 à 10 mots), pas le mot seul**, car `dans_epub` est
-imprimé dans le rapport comme « Extrait de l'EPUB » et sert au lecteur à retrouver l'endroit. `plus_dans_epub` ne
+imprimé dans le rapport comme « Extrait de l'EPUB » (points et décisions) et sert au lecteur à retrouver l'endroit. `plus_dans_epub` ne
 s'imprime pas. Le contrôle ne comprend pas le reste du texte libre.
 
 Si le contrôle refuse, corrige ce qui est faux, le rapport ou le livre, sans reformuler pour le contourner. Un nombre qui ne

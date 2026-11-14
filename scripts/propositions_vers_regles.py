@@ -14,7 +14,8 @@ jamais touchées et passent avant.
 Par défaut une proposition devient une règle. Elle n'est écartée que dans ces cas, décidés par le script :
   * confiance « basse » ; fragment identique ou trop court (< 3 caractères) ;
   * reformulation : des lettres ajoutées ou retirées avec un nombre de mots différent, ou un mot remplacé par un mot
-    sans rapport (un mot collé ou coupé, « sielle » -> « si elle », n'est pas une reformulation) ;
+    sans rapport (un mot collé ou coupé, « sielle » -> « si elle », n'est pas une reformulation, ni le retrait d'une
+    lettre parasite, « son e dossier » -> « son dossier » : un mot d'une ou deux lettres, rare dans le livre) ;
   * appel de note (« Marie8 » -> « Marie ») ; apostrophe doublée ; accent ajouté sur une capitale (« A » -> « À »)
     si l'option accent_capitals du livre est à false ;
   * fragment absent du texte (déjà corrigé) ;
@@ -119,8 +120,22 @@ def token_pairs(bad: str, good: str) -> list[tuple[str, str]]:
     return [(x, y) for x, y in zip(b, g) if x != y]
 
 
-def check(bad: str, good: str, accents: bool = True) -> str | None:
-    """Raison d'écarter la proposition, ou None si elle est acceptable. accents : option accent_capitals du livre."""
+def stray_letter(bad: str, good: str, text: str | None) -> bool:
+    """La proposition ne fait-elle que retirer une lettre parasite (« sur son e dossier » -> « sur son dossier ») ?
+
+    Un seul mot d'une ou deux lettres en moins, le reste inchangé, et ce mot est rare dans le livre (moins de 10 fois
+    seul) : « a », « y » ou « de » ne le sont pas, une tache lue comme une lettre l'est. Le lexique ne sert pas ici :
+    il connaît toutes les lettres de l'alphabet."""
+    b, g = bad.split(), good.split()
+    if not text or len(b) != len(g) + 1:
+        return False
+    i = next((k for k in range(len(g)) if b[k] != g[k]), len(g))
+    return b[:i] + b[i + 1:] == g and bool(re.fullmatch(r"[^\W\d_]{1,2}", b[i])) and len(spans(b[i], text, 10)) < 10
+
+
+def check(bad: str, good: str, accents: bool = True, text: str | None = None) -> str | None:
+    """Raison d'écarter la proposition, ou None si elle est acceptable. accents : option accent_capitals du livre.
+    text : le texte livré, pour reconnaître une lettre parasite (stray_letter)."""
     bad, good = norm(bad), norm(good)
     if bad == good:
         return "identique (style d'apostrophe ou d'espace)"
@@ -128,7 +143,7 @@ def check(bad: str, good: str, accents: bool = True) -> str | None:
         return "fragment trop court"
     if re.sub(r"\d+$", "", bad) == good or re.sub(r"\d+$", "", good) == bad:
         return "appel de note (placé par la chaîne, voir note_anchors)"
-    if len(bad.split()) != len(good.split()) and letters(bad) != letters(good):
+    if len(bad.split()) != len(good.split()) and letters(bad) != letters(good) and not stray_letter(bad, good, text):
         return "reformulation (mots ajoutés ou retirés)"
     if not accents and len(bad) == len(good) and all(
             x == y or (x.isupper() and unicodedata.normalize("NFD", y)[:1] == x) for x, y in zip(bad, good)):
@@ -299,7 +314,7 @@ def analyse(work: Path, text: str | None = None) -> list[dict]:
     # même mot erroné, corrections différentes -> conflit (sauf décision de l'orchestrateur)
     goods: dict[str, dict[str, str]] = {}            # clé du mot lu -> {clé de la correction: correction proposée}
     for e in out:
-        e["raison"] = check(e["lu"], e["propose"], accents)
+        e["raison"] = check(e["lu"], e["propose"], accents, text)
         e["ecart"] = "ecarte"
         if not e["sure"] and not e["raison"]:                    # à voir sur l'image : corrections_restantes.py
             e["ecart"], e["raison"] = "incertain", "confiance basse : à vérifier sur l'image"

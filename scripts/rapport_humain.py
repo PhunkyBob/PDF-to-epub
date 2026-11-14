@@ -16,7 +16,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from coherence import Epub, audit, digest
+from coherence import QUOTE, Epub, audit, digest, normalize
 from common import (all_paras, book_text, decision_key, hocr_words, iter_prop_mots, near_pages, norm_word, parse_remark,
                     pick_epub, plain, read_decisions, sections, straight_apos)
 
@@ -63,7 +63,8 @@ def core(w: str) -> str:
     return re.sub(r"^(?:[dlnmstcj]|qu)'", "", norm_word(w))
 
 
-def decision(ocr: str, verdict: tuple | None, final: str | None, in_text, chosen: tuple | None = None) -> dict:
+def decision(ocr: str, verdict: tuple | None, final: str | None, in_text, chosen: tuple | None = None,
+             joined: bool = False) -> dict:
     """Décision pour un mot signalé, d'après le texte livré et pas seulement d'après le verdict.
 
     verdict : (mot imprimé, verdict) de la vérification sur image, ou None. final : le mot à cet endroit de l'EPUB,
@@ -85,6 +86,10 @@ def decision(ocr: str, verdict: tuple | None, final: str | None, in_text, chosen
     seen = ""
     if verdict and not verdict[1].startswith(("illisible", "coquille")):
         seen = bare(verdict[0].split(" (")[0])
+    # morceau d'un mot coupé en fin de ligne : jugé identique sur l'image, mais l'EPUB porte le mot entier, recollé
+    piece = re.sub(r"^\W+|\W+$", "", core(chosen[0] if chosen else seen))
+    if joined and final and piece and piece != core(final) and core(final).startswith(piece) | core(final).endswith(piece):
+        return res(CORRIGE, f"Morceau d'un mot coupé en fin de ligne : recollé, l'EPUB contient le mot entier « {final} »", seen)
     if chosen:
         target, why = bare(chosen[0]), chosen[1]
         if core(target) == core(ocr):
@@ -114,10 +119,12 @@ def decision(ocr: str, verdict: tuple | None, final: str | None, in_text, chosen
 
 
 def locator(work: Path, data: dict):
-    """Renvoie une fonction (page, mot) -> (mot à cet endroit de l'EPUB, extrait de l'EPUB, extrait lu par l'OCR).
+    """Renvoie une fonction (page, mot) -> (mot à cet endroit de l'EPUB, extrait de l'EPUB, extrait lu par l'OCR,
+    recollé).
 
     Le mot et l'extrait de l'EPUB valent None si l'endroit n'est pas certain : il doit être unique, deux mots avant
-    et deux mots après identiques à ceux de l'OCR. Dans les extraits, le mot est en gras."""
+    et deux mots après identiques à ceux de l'OCR. Dans les extraits, le mot est en gras. recollé : le mot lu n'est
+    qu'un morceau (coupure de fin de ligne) du mot de l'EPUB."""
     raw = [t for p in all_paras(data) for t in plain(p).split() if re.search(r"\w", t)]
     norm = [norm_word(t) for t in raw]
     where = defaultdict(list)
@@ -135,27 +142,40 @@ def locator(work: Path, data: dict):
     def cut(words, i, n=6):
         return " ".join(words[max(0, i - n):i] + [f"**{words[i]}**"] + words[i + 1:i + 1 + n])
 
+    def edge(page: str, tail: bool) -> list[str]:
+        """Quatre mots de la page voisine, du côté commun, sans le folio : contexte d'un mot en bord de page."""
+        if not page.isdigit():
+            return []
+        ws = [x for x in page_words(str(int(page) + (-1 if tail else 1)))[1] if not x.isdigit()]
+        return ws[-4:] if tail else ws[:4]
+
     def find(page: str, word: str):
         w = norm_word(word)
         found, lu = {}, None
         for pg in near_pages(page):
-            seen, ws = page_words(pg)
-            for i in range(len(ws)):
+            seen, cur = page_words(pg)
+            before = edge(pg, True)
+            ws = before + cur + edge(pg, False)
+            for i in range(len(before), len(before) + len(cur)):
                 if ws[i] != w:
                     continue
-                lu = lu or cut(seen, i)
-                if not 2 <= i < len(ws) - 2:
-                    continue
-                for pos in where.get(ws[i - 1], []):
-                    if 0 < pos and pos + 3 < len(norm) and norm[pos - 1] == ws[i - 2] \
-                            and norm[pos + 2] == ws[i + 1] and norm[pos + 3] == ws[i + 2]:
-                        found[bare(raw[pos + 1])] = cut(raw, pos + 1)
+                lu = lu or cut(seen, i - len(before))
+                # mot coupé en fin de ligne : le morceau d'avant ou d'après appartient au même mot de l'EPUB, le
+                # contexte se prend alors un mot plus loin
+                for l in [i - 1] + ([i - 2] if i and ws[i - 1].endswith("-") else []):
+                    for r in [i + 1] + ([i + 2] if w.endswith("-") else []):
+                        if l < 1 or r + 1 >= len(ws):
+                            continue
+                        for pos in where.get(ws[l], []):
+                            if 0 < pos and pos + 3 < len(norm) and norm[pos - 1] == ws[l - 1] \
+                                    and norm[pos + 2] == ws[r] and norm[pos + 3] == ws[r + 1]:
+                                found[bare(raw[pos + 1])] = (cut(raw, pos + 1), (l, r) != (i - 1, i + 1))
             if lu:
                 break
         if len(found) == 1:
-            (final, extrait), = found.items()
-            return final, extrait, lu
-        return None, None, lu
+            (final, (extrait, joined)), = found.items()
+            return final, extrait, lu, joined
+        return None, None, lu, False
 
     return find
 
@@ -172,6 +192,60 @@ def snippet(text: str, form: str, width: int = 45) -> str | None:
     left = left.split(" ", 1)[-1] if m.start() - width > a and " " in left else left
     right = right.rsplit(" ", 1)[0] if m.end() + width < b and " " in right else right
     return f"{left}**{m.group(0)}**{right}".strip()
+
+
+PAGES = re.compile(r"\bp\.\s*\d+(?:\s*(?:[–-]|à|et|,)\s*(?:p\.\s*)?\d+)*")
+
+
+def cited_pages(s: str) -> list[str]:
+    """Pages citées dans un texte (« p. 18–19 », « p. 14, 48 et 85 ») ; un intervalle court est déroulé."""
+    out = []
+    for m in PAGES.finditer(s):
+        for a, b in re.findall(r"(\d+)(?:\s*(?:[–-]|à)\s*(\d+))?", m[0]):
+            a, b = int(a), int(b or a)
+            out += [str(p) for p in (range(a, b + 1) if 0 <= b - a <= 20 else (a, b))]
+    return list(dict.fromkeys(out))
+
+
+def cited_extracts(item: dict, fields: tuple, find, text: str) -> list[str]:
+    """Extraits de l'EPUB à imprimer avec une décision ou un point : ceux de « dans_epub », puis un extrait trouvé par
+    le script pour chaque mot cité entre « » qu'aucun extrait ne contient déjà. Le mot cité est en gras.
+
+    Le mot est cherché aux pages citées (find : locator(), qui retrouve aussi la forme corrigée d'un mot mal lu), sinon
+    à sa première occurrence dans le livre. Une citation longue est elle-même un extrait. « dans_epub » vide : les
+    citations ne sont pas du texte du livre, aucun extrait n'est cherché."""
+    given = item.get("dans_epub")
+    if given == []:
+        return []
+    body = " ".join(str(item.get(k, "")) for k in fields)
+    quotes = list(dict.fromkeys(straight_apos(q) for q in QUOTE.findall(body)))
+    words = [q for q in quotes if len(q.split()) <= 4 and re.search(r"\w", q)]     # « * * * » n'est pas un mot
+    seen = [normalize(q) for q in quotes if len(q.split()) > 4] + [normalize(q) for q in given or []]
+    out = []
+    if words and given:
+        rx = "|".join(r"(?<!\w)" + re.escape(w).replace("'", "['’]") + r"(?![\w'’])"
+                      for w in sorted(words, key=len, reverse=True))
+        out = [f"« {q if normalize(q) in map(normalize, words) else re.sub(rx, lambda m: f'**{m[0]}**', q)} »"
+               for q in given]
+    else:
+        out = [f"« {q} »" for q in given or []]
+    pages = cited_pages(body)
+    for w in words:
+        if any(normalize(w) in x for x in seen):
+            continue
+        final, extrait, page = w, None, ""
+        if " " not in w:
+            for page in pages:
+                final, extrait, *_ = find(page, w)
+                if extrait:
+                    break
+        if not extrait:
+            final, page = w, ""
+            extrait = snippet(text, w) or snippet(text, w[:1].upper() + w[1:])
+        if extrait and not any(normalize(final) in x for x in seen):
+            seen.append(normalize(extrait.replace("**", "")))
+            out.append((f"p. {page} : " if page else "") + f"« … {extrait} … »")
+    return out
 
 
 def load_remarks(work: Path):
@@ -221,8 +295,8 @@ def word_rows(work: Path, data: dict, remarks: list, text: str | None = None) ->
         v = next((by_page[(p, w)] for p in near_pages(page) if (p, w) in by_page), None)
         if v is None and w in by_word and (kind.endswith("mot inconnu") or not in_text(bare(word))):
             v = by_word[w]
-        final, extrait, lu = find(page, word)
-        d = decision(word, v, final, in_text, decisions.get(decision_key(word)))
+        final, extrait, lu, joined = find(page, word)
+        d = decision(word, v, final, in_text, decisions.get(decision_key(word)), joined)
         r = rows.setdefault((w, d["texte"]), dict(d, mot=bare(word), pages=set(), extraits=[]))
         r["pages"].add(page)
         if len(r["extraits"]) < 2:
@@ -379,8 +453,14 @@ def main():
 
     out += ["## 4. Décisions prises", "",
             "Chaque décision de structure, d'exclusion ou de correction qui engage le résultat final.", ""]
-    out += table([(d.get("sujet", ""), d.get("decision", ""), d.get("pourquoi", "")) for d in rap["decisions"]],
-                 ["Sujet", "Décision", "Pourquoi"]) + [""]
+    find = locator(work, data)
+    quoted = []                                      # extraits imprimés : texte du livre, hors du contrôle FORBIDDEN
+    rows = []
+    for d in rap["decisions"]:
+        ex = cited_extracts(d, ("decision", "pourquoi"), find, text)
+        quoted += ex
+        rows.append((d.get("sujet", ""), d.get("decision", ""), d.get("pourquoi", ""), "<br>".join(ex) or "—"))
+    out += table(rows, ["Sujet", "Décision", "Pourquoi", "Extrait de l'EPUB"]) + [""]
 
     out += ["## 5. Structure de l'EPUB", ""]
     for kind, key in (("Avant le corps", "front"), ("Corps du livre", "chapters"), ("Après le corps", "back")):
@@ -414,8 +494,10 @@ def main():
             line += f" *Traitement :* {p['traite']}"
         if p.get("a_verifier"):
             line += f" *À vérifier :* {p['a_verifier']}"
-        if p.get("dans_epub"):
-            line += " *Extrait de l'EPUB :* " + " ; ".join(f"« {q} »" for q in p["dans_epub"])
+        ex = cited_extracts(p, ("ou", "constat", "traite", "a_verifier"), find, text)
+        quoted += ex
+        if ex:
+            line += " *Extrait de l'EPUB :* " + " ; ".join(ex)
         out.append(line)
     qa = [l.strip() for l in read(work / "build" / "qa.txt").splitlines() if l.strip()]
     if qa:
@@ -447,6 +529,8 @@ def main():
     report = "\n".join(out)
     # les remarques de l'annexe A citent le texte du livre : seules les sections rédigées sont contrôlées
     head = report.split("## Annexe A.")[0]
+    for x in quoted:
+        head = head.replace(x.replace("|", "/"), "")
     bad = sorted(set(m.group(0) for m in FORBIDDEN.finditer(head)))
     if bad:
         sys.exit("Le rapport cite des fichiers de travail ou des termes pour l'agent : " + ", ".join(bad)

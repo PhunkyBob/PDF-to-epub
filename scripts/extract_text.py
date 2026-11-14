@@ -205,9 +205,30 @@ class Extractor:
             lines.append(dict(l=l, t=t, r=r, b=b, xs=float(xs.group(1)) if xs else 0.0, words=words,
                               wconfs=confs, plain=" ".join(words), text=self.mark_italics(words, flags),
                               wlefts=wlefts, wrights=wrights, wtops=wtops, wbots=wbots, wflags=flags))
+        lines = self.drop_stray_letters(n, lines)
         lines += self.lost_lines(f.with_suffix(".lost.json"), n, lines)
         lines.sort(key=lambda d: (d["t"], d["l"]))
         return W, H, lines
+
+    def drop_stray_letters(self, n, lines):
+        """Retire les taches lues comme une lettre (« une r sorte », « son e dossier ») : un mot d'une ou deux lettres,
+        seul sur sa ligne OCR et bien plus petit qu'un mot du texte (hauteur < stray_letter_ratio × la hauteur médiane
+        des mots de la page). Une vraie lettre seule est sur la ligne de ses voisins et fait plus de la moitié de
+        cette hauteur. Chaque retrait est signalé."""
+        ratio = self.cfg["stray_letter_ratio"]
+        heights = [b - t for ln in lines for w, t, b in zip(ln["words"], ln["wtops"], ln["wbots"]) if len(w) > 3]
+        if not ratio or len(heights) < 20:           # page presque vide : pas de hauteur de référence fiable
+            return lines
+        limit, keep = ratio * statistics.median(heights), []
+        for ln in lines:
+            w = ln["words"][0]
+            if len(ln["words"]) == 1 and re.fullmatch(r"[^\W\d_]{1,2}", w) and ln["wbots"][0] - ln["wtops"][0] < limit:
+                msg = f"p.{n}: caractère parasite retiré (tache lue comme une lettre ; vérifier qu'aucun mot ne manque) : « {w} »"
+                if msg not in REVIEW:                # la page est lue plusieurs fois
+                    REVIEW.append(msg)
+            else:
+                keep.append(ln)
+        return keep
 
     @staticmethod
     def lost_lines(path, n, lines):

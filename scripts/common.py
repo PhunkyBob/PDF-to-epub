@@ -59,6 +59,7 @@ DEFAULTS: dict = {
     "header_band": 0.065,
     "footer_band": 0.90,
     "heading_min_size_ratio": 1.2,
+    "stray_letter_ratio": 0.4,
     "footnotes": True,
     "footnote_max_size_ratio": 0.88,
     "note_numbering": "book",        # book : numérotation continue sur le livre ; chapter : reprise à 1 à chaque chapitre
